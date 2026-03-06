@@ -28,6 +28,7 @@ export type EditorStatus = {
   height: number;
   tool: ToolKind;
   activeColor: string;
+  activeAlpha: number;
   selection: SelectionState;
   message: string | null;
   canUndo: boolean;

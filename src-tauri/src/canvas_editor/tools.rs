@@ -53,11 +53,7 @@ pub fn flood_fill(
     height: i32,
     start: Point,
     target: [u8; 4],
-    replacement: [u8; 4],
 ) -> Vec<Point> {
-    if target == replacement {
-        return Vec::new();
-    }
     let area = (width * height) as usize;
     let mut seen = vec![false; area];
     let mut queue = VecDeque::from([start]);

@@ -51,6 +51,7 @@ pub struct EditorStatus {
     pub height: u32,
     pub tool: ToolKind,
     pub active_color: String,
+    pub active_alpha: u8,
     pub selection: SelectionState,
     pub message: Option<String>,
     pub can_undo: bool,

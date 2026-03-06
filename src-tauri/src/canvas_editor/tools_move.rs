@@ -28,7 +28,7 @@ impl Editor {
             if self.is_selected_masked(src_idx) {
                 let color = Self::rgba_at(base, src_idx);
                 if color[3] > 0 {
-                    desired = color;
+                    desired = Self::alpha_blend(color, desired);
                 }
             }
         }

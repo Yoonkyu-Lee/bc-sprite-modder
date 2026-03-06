@@ -25,6 +25,11 @@ impl Editor {
         self.status()
     }
 
+    pub(crate) fn set_active_alpha(&mut self, alpha: u8) -> EditorStatus {
+        self.active_alpha = alpha;
+        self.status()
+    }
+
     pub(crate) fn set_view(&mut self, zoom: f32, pan: Point) -> EditorStatus {
         self.zoom = zoom;
         self.pan = pan;
@@ -33,6 +38,20 @@ impl Editor {
 
     pub(crate) fn dispatch_shortcut(&mut self, input: ShortcutInput) -> EditorEventResult {
         let key = input.key.to_lowercase();
+        if key == "enter" {
+            let patch = if self.pointer.move_base_bitmap.is_some() {
+                self.finalize_move_session()
+            } else {
+                self.clear_selection_visual_state();
+                None
+            };
+            self.message = Some("SELECTION COMMIT".into());
+            return EditorEventResult {
+                status: self.status(),
+                patch,
+                consumed: true,
+            };
+        }
         if input.ctrl && !input.shift && key == "z" {
             return self.undo();
         }

@@ -59,6 +59,12 @@ export async function setActiveColor(sessionId: string, hex: string): Promise<Ed
   });
 }
 
+export async function setActiveAlpha(sessionId: string, alpha: number): Promise<EditorStatus> {
+  return invoke("canvas_editor_set_active_alpha", {
+    args: { sessionId, alpha: Math.max(0, Math.min(255, Math.round(alpha))) },
+  });
+}
+
 export async function setView(sessionId: string, zoom: number, pan: Point): Promise<EditorStatus> {
   return invoke("canvas_editor_set_view", {
     args: {

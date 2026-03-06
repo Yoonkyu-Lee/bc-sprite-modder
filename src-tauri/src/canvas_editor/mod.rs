@@ -13,5 +13,6 @@ mod tools_select;
 
 pub use api::{
     create_session, dispatch_pointer, dispatch_shortcut, get_move_preview_data, get_snapshot,
-    get_status, redo, set_active_color, set_selection_mode, set_tool, set_view, undo,
+    get_status, redo, set_active_alpha, set_active_color, set_selection_mode, set_tool, set_view,
+    undo,
 };

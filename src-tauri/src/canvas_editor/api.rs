@@ -63,6 +63,10 @@ pub fn set_active_color(session_id: &str, hex: String) -> Result<EditorStatus, S
     with_editor_mut(session_id, |e| e.set_active_color(hex))
 }
 
+pub fn set_active_alpha(session_id: &str, alpha: u8) -> Result<EditorStatus, String> {
+    with_editor_mut(session_id, |e| e.set_active_alpha(alpha))
+}
+
 pub fn set_view(session_id: &str, zoom: f32, pan: Point) -> Result<EditorStatus, String> {
     with_editor_mut(session_id, |e| e.set_view(zoom, pan))
 }

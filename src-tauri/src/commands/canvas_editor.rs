@@ -51,6 +51,13 @@ pub struct SetColorArgs {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SetAlphaArgs {
+    pub session_id: String,
+    pub alpha: u8,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SetViewArgs {
     pub session_id: String,
     pub zoom: f32,
@@ -118,6 +125,13 @@ pub fn canvas_editor_set_active_color(
     args: SetColorArgs,
 ) -> Result<crate::canvas_editor::types::EditorStatus, String> {
     crate::canvas_editor::set_active_color(&args.session_id, args.hex)
+}
+
+#[tauri::command]
+pub fn canvas_editor_set_active_alpha(
+    args: SetAlphaArgs,
+) -> Result<crate::canvas_editor::types::EditorStatus, String> {
+    crate::canvas_editor::set_active_alpha(&args.session_id, args.alpha)
 }
 
 #[tauri::command]

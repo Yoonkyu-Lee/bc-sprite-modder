@@ -19,6 +19,7 @@ import {
   getMovePreviewData,
   getSnapshot,
   redo,
+  setActiveAlpha,
   setActiveColor,
   setSelectionMode,
   setTool,
@@ -31,6 +32,7 @@ import type { Rect } from "../features/canvas-editor/types";
 const CANVAS_SIZE = 1024;
 const ZOOM_MIN = 0.2;
 const ZOOM_MAX = 64;
+const ZOOM_SCRUB_SENSITIVITY = 0.005;
 
 type MovePreviewState = {
   bounds: Rect;
@@ -56,6 +58,7 @@ function fallbackStatus(): EditorStatus {
     height: CANVAS_SIZE,
     tool: "draw",
     activeColor: "#ffffff",
+    activeAlpha: 255,
     selection: {
       rect: null,
       draftRect: null,
@@ -88,7 +91,18 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
   const [revision, setRevision] = useState(0);
   const [isFocused, setIsFocused] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [zoomToolLatched, setZoomToolLatched] = useState(false);
+  const [zoomToolHeld, setZoomToolHeld] = useState(false);
   const panDragStartRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
+  const zoomDragRef = useRef<{
+    startClientX: number;
+    startZoom: number;
+    anchorPixel: Point;
+    anchorScreenX: number;
+    anchorScreenY: number;
+    viewportWidth: number;
+    viewportHeight: number;
+  } | null>(null);
   const pointerDragActiveRef = useRef(false);
   const pendingMoveRef = useRef<{ x: number; y: number; button?: number } | null>(null);
   const moveRafRef = useRef<number | null>(null);
@@ -204,6 +218,7 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
   }, []);
 
   const focusPanel = () => rootRef.current?.focus();
+  const isZoomToolActive = zoomToolLatched || zoomToolHeld;
 
   const toPixel = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
@@ -240,9 +255,50 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
     syncView(Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, next)), status.pan);
   };
 
+  const computePanForAnchor = useCallback(
+    (
+      zoom: number,
+      anchorPixel: Point,
+      anchorScreenX: number,
+      anchorScreenY: number,
+      viewportWidth: number,
+      viewportHeight: number
+    ): Point => {
+      const panX = anchorScreenX - anchorPixel.x * zoom - (viewportWidth - CANVAS_SIZE * zoom) / 2;
+      const panY = anchorScreenY - anchorPixel.y * zoom - (viewportHeight - CANVAS_SIZE * zoom) / 2;
+      return { x: Math.round(panX), y: Math.round(panY) };
+    },
+    []
+  );
+
   const handlePointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     focusPanel();
     pointerDragActiveRef.current = true;
+    if (isZoomToolActive) {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const point = screenToPixel(event.clientX - rect.left, event.clientY - rect.top, {
+        viewportWidth: rect.width,
+        viewportHeight: rect.height,
+        imageWidth: CANVAS_SIZE,
+        imageHeight: CANVAS_SIZE,
+        zoom: status.zoom,
+        panX: status.pan.x,
+        panY: status.pan.y,
+      });
+      zoomDragRef.current = {
+        startClientX: event.clientX,
+        startZoom: status.zoom,
+        anchorPixel: point,
+        anchorScreenX: event.clientX - rect.left,
+        anchorScreenY: event.clientY - rect.top,
+        viewportWidth: rect.width,
+        viewportHeight: rect.height,
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      return;
+    }
     if (event.button === 1) {
       panDragStartRef.current = {
         x: event.clientX,
@@ -281,6 +337,21 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
 
   const handlePointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (!bitmap) return;
+    if (isZoomToolActive && zoomDragRef.current) {
+      const d = zoomDragRef.current;
+      const dx = event.clientX - d.startClientX;
+      const nextZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, d.startZoom * Math.exp(dx * ZOOM_SCRUB_SENSITIVITY)));
+      const nextPan = computePanForAnchor(
+        nextZoom,
+        d.anchorPixel,
+        d.anchorScreenX,
+        d.anchorScreenY,
+        d.viewportWidth,
+        d.viewportHeight
+      );
+      syncView(nextZoom, nextPan);
+      return;
+    }
     const panStart = panDragStartRef.current;
     const point = toPixel(event);
     setHoverPixel((prev) => (prev?.x === point.x && prev?.y === point.y ? prev : point));
@@ -332,6 +403,10 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
 
   const handlePointerUp = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     pointerDragActiveRef.current = false;
+    if (zoomDragRef.current) {
+      zoomDragRef.current = null;
+      return;
+    }
     if (event.button === 1) {
       panDragStartRef.current = null;
       return;
@@ -377,6 +452,12 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
   };
 
   const canvasCursor = useMemo(() => {
+    if (zoomDragRef.current) {
+      return "ew-resize";
+    }
+    if (isZoomToolActive) {
+      return "zoom-in";
+    }
     const inBounds =
       hoverPixel != null &&
       hoverPixel.x >= 0 &&
@@ -390,13 +471,15 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
       return status.selection.moving ? "grabbing" : "grab";
     }
     return "crosshair";
-  }, [hoverPixel, status.tool, status.selection.moving]);
+  }, [hoverPixel, status.tool, status.selection.moving, isZoomToolActive]);
 
   const handleWheel = (event: ReactWheelEvent<HTMLCanvasElement>) => {
     event.preventDefault();
     if (event.ctrlKey) {
-      const nextZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, status.zoom * (1 - event.deltaY * 0.0025)));
-      syncView(nextZoom, status.pan);
+      syncView(status.zoom, {
+        x: status.pan.x - event.deltaY,
+        y: status.pan.y,
+      });
       return;
     }
     syncView(status.zoom, {
@@ -407,7 +490,16 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
 
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     const key = event.key;
+    const keyLower = key.toLowerCase();
+    if (!event.ctrlKey && !event.shiftKey && !event.altKey && keyLower === "z") {
+      event.preventDefault();
+      if (!zoomToolHeld) {
+        setZoomToolHeld(true);
+      }
+      return;
+    }
     const isShortcutKey =
+      key === "Enter" ||
       key === "Tab" ||
       key === "<" ||
       key === ">" ||
@@ -452,6 +544,13 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
     });
   };
 
+  const handleKeyUp = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const keyLower = event.key.toLowerCase();
+    if (keyLower === "z") {
+      setZoomToolHeld(false);
+    }
+  };
+
   const selectTool = (tool: ToolKind) => {
     enqueue(async () => {
       const hadMovePreview = movePreview != null;
@@ -490,6 +589,14 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
     });
   };
 
+  const onAlphaChange = (alpha: number) => {
+    enqueue(async () => {
+      const next = await setActiveAlpha(sessionIdRef.current, alpha);
+      setStatus(next);
+      setRevision((v) => v + 1);
+    });
+  };
+
   const onUndo = () => {
     if (!bitmap) return;
     enqueue(async () => {
@@ -520,8 +627,9 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
 
   const statusLine = useMemo(() => {
     if (loadError) return `Error: ${loadError}`;
+    if (isZoomToolActive) return `ZOOM TOOL (${zoomToolHeld ? "hold" : "latched"})`;
     return status.message ?? "Ready";
-  }, [status.message, loadError]);
+  }, [status.message, loadError, isZoomToolActive, zoomToolHeld]);
 
   return (
     <div
@@ -529,9 +637,13 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
       className={`canvas-panel ${isFocused ? "focused" : ""}`}
       tabIndex={0}
       onFocus={() => setIsFocused(true)}
-      onBlur={() => setIsFocused(false)}
+      onBlur={() => {
+        setIsFocused(false);
+        setZoomToolHeld(false);
+      }}
       onMouseDown={focusPanel}
       onKeyDown={handleKeyDown}
+      onKeyUp={handleKeyUp}
     >
       <div className="canvas-toolbar">
         {TOOL_BUTTONS.map((item) => (
@@ -549,20 +661,33 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
           COLOR
           <input type="color" value={status.activeColor} onChange={(e) => onColorChange(e.target.value)} />
         </label>
+        <label className="alpha-input">
+          ALPHA {status.activeAlpha}
+          <input
+            type="range"
+            min={0}
+            max={255}
+            step={1}
+            value={status.activeAlpha}
+            onChange={(e) => onAlphaChange(Number(e.target.value))}
+          />
+        </label>
         <button type="button" disabled={!status.canUndo} onClick={onUndo}>
           Undo
         </button>
         <button type="button" disabled={!status.canRedo} onClick={onRedo}>
           Redo
         </button>
-        <button type="button" title="Zoom Out" onClick={() => changeZoom(status.zoom / 1.25)}>
-          -
+        <button
+          type="button"
+          className={zoomToolLatched ? "active" : ""}
+          title="Zoom Tool (Z hold)"
+          onClick={() => setZoomToolLatched((v) => !v)}
+        >
+          ZOOM
         </button>
         <button type="button" title="Zoom Reset" onClick={() => changeZoom(1)}>
-          1:1
-        </button>
-        <button type="button" title="Zoom In" onClick={() => changeZoom(status.zoom * 1.25)}>
-          +
+          100%
         </button>
         <div className="select-mode-switch">
           <button
@@ -597,7 +722,7 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
         />
       </div>
       <div className="canvas-status">
-        <span>{`Tool: ${status.tool.toUpperCase()}`}</span>
+        <span>{`Tool: ${(isZoomToolActive ? "zoom" : status.tool).toUpperCase()}`}</span>
         <span>{`Zoom: ${status.zoom.toFixed(2)}x`}</span>
         <span>
           {status.selection.rect
@@ -605,7 +730,7 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
             : "Selection: none"}
         </span>
         <span>{statusLine}</span>
-        <span className="hint">TAB/p/d/f/e/s/m/l, Ctrl+Z/Y, Ctrl+Wheel</span>
+        <span className="hint">TAB/p/d/f/e/s/m/l, Z hold+drag, Ctrl+Wheel=H-Scroll, Ctrl+Z/Y</span>
       </div>
     </div>
   );

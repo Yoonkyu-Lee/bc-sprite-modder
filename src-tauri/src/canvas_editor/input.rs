@@ -22,12 +22,12 @@ impl Editor {
             ToolKind::Draw => {
                 self.pointer.action_changes.clear();
                 self.message = Some("DRAW".into());
-                self.draw_segment(p, p, Self::parse_color(&self.active_color))
+                self.draw_segment_blended(p, p, self.active_rgba())
             }
             ToolKind::Erase => {
                 self.pointer.action_changes.clear();
                 self.message = Some("ERASE".into());
-                self.draw_segment(p, p, [0, 0, 0, 0])
+                self.draw_segment_solid(p, p, [0, 0, 0, 0])
             }
             ToolKind::Pick => {
                 if !self.in_bounds(p) {
@@ -36,6 +36,7 @@ impl Editor {
                 }
                 let idx = self.idx(p);
                 self.active_color = Self::to_hex(Self::rgba_at(&self.bitmap, idx));
+                self.active_alpha = Self::rgba_at(&self.bitmap, idx)[3];
                 self.message = Some(format!("PICK {}", self.active_color));
                 self.is_pointer_down = false;
                 None
@@ -48,7 +49,7 @@ impl Editor {
                 self.pointer.action_changes.clear();
                 let idx = self.idx(p);
                 let target = Self::rgba_at(&self.bitmap, idx);
-                let replacement = Self::parse_color(&self.active_color);
+                let source = self.active_rgba();
                 let mut changes = HashMap::<u32, PixelChange>::new();
                 for fp in flood_fill(
                     &self.bitmap,
@@ -56,9 +57,11 @@ impl Editor {
                     self.height as i32,
                     p,
                     target,
-                    replacement,
                 ) {
-                    self.set_pixel_with_changes(&mut changes, fp, replacement);
+                    let didx = self.idx(fp);
+                    let dst = Self::rgba_at(&self.bitmap, didx);
+                    let out = Self::alpha_blend(source, dst);
+                    self.set_pixel_with_changes(&mut changes, fp, out);
                 }
                 let patch = Self::patch_from_changes(&changes);
                 if let Some(ref pch) = patch {
@@ -145,8 +148,8 @@ impl Editor {
         self.pointer.last_point = Some(p);
 
         match self.tool {
-            ToolKind::Draw => self.draw_segment(last, p, Self::parse_color(&self.active_color)),
-            ToolKind::Erase => self.draw_segment(last, p, [0, 0, 0, 0]),
+            ToolKind::Draw => self.draw_segment_blended(last, p, self.active_rgba()),
+            ToolKind::Erase => self.draw_segment_solid(last, p, [0, 0, 0, 0]),
             ToolKind::Select => {
                 if self.selection.mode == SelectionMode::Rect {
                     if let Some(start) = self.pointer.select_start {

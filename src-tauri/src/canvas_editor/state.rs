@@ -27,6 +27,7 @@ pub(crate) struct Editor {
     pub(crate) bitmap: Vec<u8>,
     pub(crate) tool: ToolKind,
     pub(crate) active_color: String,
+    pub(crate) active_alpha: u8,
     pub(crate) selection: SelectionState,
     pub(crate) message: Option<String>,
     pub(crate) zoom: f32,
@@ -46,6 +47,7 @@ impl Editor {
             bitmap: vec![0u8; (width * height * 4) as usize],
             tool: ToolKind::Draw,
             active_color: "#ffffff".to_string(),
+            active_alpha: 255,
             selection: SelectionState {
                 rect: None,
                 draft_rect: None,
@@ -72,6 +74,7 @@ impl Editor {
             height: self.height,
             tool: self.tool,
             active_color: self.active_color.clone(),
+            active_alpha: self.active_alpha,
             selection: self.selection.clone(),
             message: self.message.clone(),
             can_undo: !self.undo_stack.is_empty(),
@@ -91,6 +94,37 @@ impl Editor {
             return [255, 255, 255, 255];
         };
         [((v >> 16) & 0xff) as u8, ((v >> 8) & 0xff) as u8, (v & 0xff) as u8, 255]
+    }
+
+    pub(crate) fn active_rgba(&self) -> [u8; 4] {
+        let mut rgba = Self::parse_color(&self.active_color);
+        rgba[3] = self.active_alpha;
+        rgba
+    }
+
+    // Source-over alpha compositing for straight-alpha RGBA.
+    pub(crate) fn alpha_blend(src: [u8; 4], dst: [u8; 4]) -> [u8; 4] {
+        let sa = src[3] as f32 / 255.0;
+        let da = dst[3] as f32 / 255.0;
+        let out_a = sa + da * (1.0 - sa);
+        if out_a <= f32::EPSILON {
+            return [0, 0, 0, 0];
+        }
+        let src_r = src[0] as f32 / 255.0;
+        let src_g = src[1] as f32 / 255.0;
+        let src_b = src[2] as f32 / 255.0;
+        let dst_r = dst[0] as f32 / 255.0;
+        let dst_g = dst[1] as f32 / 255.0;
+        let dst_b = dst[2] as f32 / 255.0;
+        let out_r = (src_r * sa + dst_r * da * (1.0 - sa)) / out_a;
+        let out_g = (src_g * sa + dst_g * da * (1.0 - sa)) / out_a;
+        let out_b = (src_b * sa + dst_b * da * (1.0 - sa)) / out_a;
+        [
+            (out_r.clamp(0.0, 1.0) * 255.0).round() as u8,
+            (out_g.clamp(0.0, 1.0) * 255.0).round() as u8,
+            (out_b.clamp(0.0, 1.0) * 255.0).round() as u8,
+            (out_a.clamp(0.0, 1.0) * 255.0).round() as u8,
+        ]
     }
 
     pub(crate) fn to_hex(rgba: [u8; 4]) -> String {
@@ -181,5 +215,14 @@ impl Editor {
         self.selection.rect = None;
         self.pointer.move_selected_mask.clear();
         self.pointer.move_selection_bounds = None;
+    }
+
+    pub(crate) fn clear_selection_visual_state(&mut self) {
+        self.clear_selection_and_move_cache();
+        self.selection.draft_rect = None;
+        self.selection.lasso_points.clear();
+        self.selection.draft_lasso_points.clear();
+        self.selection.moving = false;
+        self.selection.move_delta = Point { x: 0, y: 0 };
     }
 }

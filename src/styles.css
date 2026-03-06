@@ -350,6 +350,21 @@ html, body, #root {
   padding: 0;
 }
 
+.canvas-toolbar .alpha-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid #3a465c;
+  border-radius: 4px;
+  padding: 0.2rem 0.45rem;
+  font-size: 0.75rem;
+  background: #2b3445;
+}
+
+.canvas-toolbar .alpha-input input {
+  width: 6.5rem;
+}
+
 .canvas-stage {
   flex: 1;
   min-height: 0;

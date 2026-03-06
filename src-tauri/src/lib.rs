@@ -35,6 +35,7 @@ pub fn run() {
             commands::canvas_editor::canvas_editor_set_tool,
             commands::canvas_editor::canvas_editor_set_selection_mode,
             commands::canvas_editor::canvas_editor_set_active_color,
+            commands::canvas_editor::canvas_editor_set_active_alpha,
             commands::canvas_editor::canvas_editor_set_view,
             commands::canvas_editor::canvas_editor_undo,
             commands::canvas_editor::canvas_editor_redo,
