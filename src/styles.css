@@ -1,0 +1,389 @@
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+
+.app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.app-shell-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid #ddd;
+  background: #f8f8f8;
+}
+
+.app-title {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.app-tabs {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.app-tabs .tab {
+  padding: 0.4rem 0.8rem;
+  border: 1px solid #ccc;
+  background: #fff;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.app-tabs .tab.active {
+  background: #0066cc;
+  color: #fff;
+  border-color: #0066cc;
+}
+
+.app-shell-main {
+  flex: 1;
+  overflow: auto;
+  padding: 1rem;
+  position: relative;
+}
+
+.tab-panel {
+  height: 100%;
+  min-height: 0;
+}
+
+.tab-panel[hidden] {
+  display: none !important;
+}
+
+.page h2 {
+  margin-top: 0;
+}
+
+.app-workspace-loading,
+.app-workspace-picker {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  gap: 1rem;
+  padding: 2rem;
+}
+
+.app-workspace-picker .error {
+  color: #c00;
+  cursor: pointer;
+}
+
+.app-workspace-picker button {
+  padding: 0.6rem 1.2rem;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.data-setup-page .form-row,
+.data-setup-page fieldset {
+  margin-bottom: 1rem;
+}
+
+.data-setup-page .form-row label,
+.data-setup-page fieldset label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-right: 1rem;
+}
+
+.data-setup-page .apk-path-input {
+  width: 20rem;
+  margin-left: 0.5rem;
+}
+
+.data-setup-page .log-area {
+  margin-top: 1rem;
+  padding: 0.5rem;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  border-radius: 4px;
+  max-height: 300px;
+  overflow: auto;
+  font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.data-setup-page .log-content {
+  min-height: 1em;
+}
+
+.data-setup-page .log-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  padding: 0 0.25rem;
+  border-bottom: 1px solid transparent;
+  min-height: 1.4em;
+}
+
+.data-setup-page .run-btn {
+  margin-right: 0.5rem;
+}
+
+.data-setup-page .create-project-btn {
+  margin-top: 1rem;
+}
+
+.project-page .project-form,
+.project-page .project-list {
+  margin-bottom: 1.5rem;
+}
+
+.project-page .form-row {
+  margin-bottom: 0.5rem;
+}
+
+.project-page .form-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.project-page .dataset-row .label {
+  margin-right: 0.5rem;
+}
+
+.project-page .project-entries {
+  list-style: none;
+  padding: 0;
+}
+
+.project-page .project-entries li {
+  padding: 0.4rem 0.5rem;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.project-page .project-entries li:hover {
+  background: #eee;
+}
+
+.project-page .project-entries li.current {
+  background: #d0e8ff;
+}
+
+.project-page .refresh-btn {
+  margin-bottom: 0.5rem;
+}
+
+.project-page .current-project {
+  font-size: 0.9rem;
+  color: #666;
+}
+
+/* Sprite 편집 페이지 */
+.sprite-page .sprite-layout {
+  display: flex;
+  gap: 1rem;
+  margin-top: 1rem;
+  height: calc(100vh - 120px);
+  min-height: 400px;
+}
+
+.sprite-page .sprite-browser {
+  flex-shrink: 0;
+  width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  padding: 0.75rem;
+  overflow: hidden;
+}
+
+.sprite-page .sprite-browser p {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.sprite-page .sprite-browser .error {
+  color: #c00;
+  font-size: 0.85rem;
+}
+
+.sprite-page .sprite-browser .sprite-browser-search {
+  width: 100%;
+  padding: 0.4rem 0.5rem;
+  font-size: 0.9rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  box-sizing: border-box;
+}
+
+.sprite-page .unit-form-browser-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  flex: 1;
+}
+
+.sprite-page .unit-form-browser-list li {
+  padding: 0.4rem 0.5rem;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+.sprite-page .unit-form-browser-list li:hover {
+  background: #eee;
+}
+
+.sprite-page .unit-form-browser-list li.selected {
+  background: #d0e8ff;
+}
+
+.sprite-page .sprite-editor-area {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.sprite-page .sprite-editor-placeholder {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #666;
+  padding: 2rem;
+}
+
+.canvas-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #171b22;
+  color: #dde3ef;
+  outline: none;
+}
+
+.canvas-panel.focused {
+  box-shadow: inset 0 0 0 1px #5fa3ff;
+}
+
+.canvas-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem;
+  border-bottom: 1px solid #2a3140;
+  background: linear-gradient(180deg, #232a36, #1e2430);
+  flex-wrap: wrap;
+}
+
+.canvas-toolbar button {
+  border: 1px solid #3a465c;
+  background: #2b3445;
+  color: #d9e2f2;
+  border-radius: 4px;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.canvas-toolbar button:hover {
+  background: #33415a;
+}
+
+.canvas-toolbar button.active {
+  background: #416ca8;
+  border-color: #78a9e9;
+}
+
+.canvas-toolbar button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.canvas-toolbar .select-mode-switch {
+  display: inline-flex;
+  gap: 0.25rem;
+  margin-left: 0.2rem;
+}
+
+.canvas-toolbar .color-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid #3a465c;
+  border-radius: 4px;
+  padding: 0.2rem 0.45rem;
+  font-size: 0.75rem;
+  background: #2b3445;
+}
+
+.canvas-toolbar .color-input input {
+  width: 1.8rem;
+  height: 1.2rem;
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.canvas-stage {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background-color: #9aa1ad;
+  background-image:
+    linear-gradient(45deg, #7f8793 25%, transparent 25%),
+    linear-gradient(-45deg, #7f8793 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #7f8793 75%),
+    linear-gradient(-45deg, transparent 75%, #7f8793 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+.canvas-surface {
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.canvas-status {
+  display: flex;
+  gap: 0.8rem;
+  padding: 0.35rem 0.5rem;
+  border-top: 1px solid #2a3140;
+  background: #1d2330;
+  font-size: 0.78rem;
+  color: #c2ccde;
+  white-space: nowrap;
+  overflow: auto;
+}
+
+.canvas-status .hint {
+  color: #8fa2c8;
+}

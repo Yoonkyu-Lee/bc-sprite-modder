@@ -1,0 +1,13 @@
+{
+  "identifier": "main-capability",
+  "description": "Main window capability",
+  "windows": ["main"],
+  "permissions": [
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "dialog:allow-message",
+    "fs:default",
+    "shell:allow-open",
+    "store:default"
+  ]
+}
