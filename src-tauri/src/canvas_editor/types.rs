@@ -113,6 +113,7 @@ pub struct MovePreviewData {
 #[serde(rename_all = "camelCase")]
 // TODO(canvas-editor): remove this once layer reordering API is reintroduced,
 // or wire it back into command/frontend paths when layer stack support returns.
+#[allow(dead_code)]
 pub struct LayerOrderInput {
     pub ids: Vec<u32>,
 }

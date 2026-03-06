@@ -28,7 +28,7 @@ mods/
 tbcml/
 
 # Reference repos (cloned, do not push)
-reference/pixcil/
+reference/
 
 # Environment
 .env
