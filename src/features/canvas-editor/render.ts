@@ -24,6 +24,8 @@ export type RenderMovePreview = {
   maskVersion: number;
   pixels: Uint8ClampedArray;
   pixelsVersion: number;
+  overlayBitmap: Uint8ClampedArray;
+  overlayBitmapVersion: number;
 };
 
 export type RenderInput = {
@@ -71,12 +73,15 @@ export class CanvasRenderer {
   private baseTexture: WebGLTexture | null = null;
   private maskTexture: WebGLTexture | null = null;
   private floatingTexture: WebGLTexture | null = null;
+  private overlayTexture: WebGLTexture | null = null;
   private baseTexSize: { w: number; h: number } = { w: 0, h: 0 };
   private maskTexSize: { w: number; h: number } = { w: 0, h: 0 };
   private floatingTexSize: { w: number; h: number } = { w: 0, h: 0 };
+  private overlayTexSize: { w: number; h: number } = { w: 0, h: 0 };
   private uploadedBitmapVersion = -1;
   private uploadedMaskVersion = -1;
   private uploadedFloatingVersion = -1;
+  private uploadedOverlayVersion = -1;
 
   private imageRectUniform: WebGLUniformLocation | null = null;
   private imageSamplerUniform: WebGLUniformLocation | null = null;
@@ -98,7 +103,8 @@ export class CanvasRenderer {
       !this.lineBuffer ||
       !this.baseTexture ||
       !this.maskTexture ||
-      !this.floatingTexture
+      !this.floatingTexture ||
+      !this.overlayTexture
     ) {
       return;
     }
@@ -129,13 +135,21 @@ export class CanvasRenderer {
         input.movePreview.pixels,
         input.movePreview.pixelsVersion
       );
+      this.uploadOverlayTextureIfNeeded(
+        input.imageWidth,
+        input.imageHeight,
+        input.movePreview.overlayBitmap,
+        input.movePreview.overlayBitmapVersion
+      );
     }
 
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
 
     const frame = ndcRect(tf.originX, tf.originY, tf.drawWidth, tf.drawHeight, viewportW, viewportH);
-    this.drawImageQuad(frame, this.baseTexture, !!input.movePreview);
+    // Base bitmap can already include "source hole + under-layer restore" during move preview.
+    // Applying hideSelected mask again causes a false cut-out of other layers.
+    this.drawImageQuad(frame, this.baseTexture, false);
 
     if (input.movePreview) {
       const b = input.movePreview.bounds;
@@ -145,6 +159,7 @@ export class CanvasRenderer {
       const ow = b.width * input.view.zoom;
       const oh = b.height * input.view.zoom;
       this.drawImageQuad(ndcRect(ox, oy, ow, oh, viewportW, viewportH), this.floatingTexture, false);
+      this.drawImageQuad(frame, this.overlayTexture, false);
     }
 
     gl.useProgram(this.lineProgram);
@@ -275,6 +290,20 @@ export class CanvasRenderer {
     this.uploadedFloatingVersion = version;
   }
 
+  private uploadOverlayTextureIfNeeded(width: number, height: number, bitmap: Uint8ClampedArray, version: number): void {
+    const gl = this.gl;
+    if (!gl || !this.overlayTexture) return;
+    gl.bindTexture(gl.TEXTURE_2D, this.overlayTexture);
+    if (this.overlayTexSize.w !== width || this.overlayTexSize.h !== height) {
+      this.overlayTexSize = { w: width, h: height };
+      this.uploadedOverlayVersion = -1;
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    }
+    if (this.uploadedOverlayVersion === version) return;
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
+    this.uploadedOverlayVersion = version;
+  }
+
   private ensureGl(target: HTMLCanvasElement): boolean {
     if (this.gl) return true;
     const gl = target.getContext("webgl2", { antialias: false, premultipliedAlpha: false });
@@ -296,7 +325,16 @@ export class CanvasRenderer {
     this.baseTexture = gl.createTexture();
     this.maskTexture = gl.createTexture();
     this.floatingTexture = gl.createTexture();
-    if (!this.imageVao || !this.lineVao || !this.lineBuffer || !this.baseTexture || !this.maskTexture || !this.floatingTexture) {
+    this.overlayTexture = gl.createTexture();
+    if (
+      !this.imageVao ||
+      !this.lineVao ||
+      !this.lineBuffer ||
+      !this.baseTexture ||
+      !this.maskTexture ||
+      !this.floatingTexture ||
+      !this.overlayTexture
+    ) {
       return false;
     }
 
@@ -318,6 +356,7 @@ export class CanvasRenderer {
     initTexture(gl, this.baseTexture);
     initTexture(gl, this.maskTexture);
     initTexture(gl, this.floatingTexture);
+    initTexture(gl, this.overlayTexture);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     return true;

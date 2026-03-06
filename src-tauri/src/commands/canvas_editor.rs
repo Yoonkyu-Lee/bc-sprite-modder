@@ -64,6 +64,36 @@ pub struct SetViewArgs {
     pub pan: crate::canvas_editor::types::Point,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LayerIdArgs {
+    pub session_id: String,
+    pub layer_id: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameLayerArgs {
+    pub session_id: String,
+    pub layer_id: u32,
+    pub name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetLayerOpacityArgs {
+    pub session_id: String,
+    pub layer_id: u32,
+    pub opacity: u8,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReorderLayersArgs {
+    pub session_id: String,
+    pub ids: Vec<u32>,
+}
+
 #[tauri::command]
 pub fn canvas_editor_create_session(
     args: CreateSessionArgs,
@@ -153,4 +183,53 @@ pub fn canvas_editor_redo(
     args: SessionArgs,
 ) -> Result<crate::canvas_editor::types::EditorEventResult, String> {
     crate::canvas_editor::redo(&args.session_id)
+}
+
+#[tauri::command]
+pub fn canvas_editor_create_layer_above_active(
+    args: SessionArgs,
+) -> Result<crate::canvas_editor::types::EditorStatus, String> {
+    crate::canvas_editor::create_layer_above_active(&args.session_id)
+}
+
+#[tauri::command]
+pub fn canvas_editor_delete_layer(
+    args: LayerIdArgs,
+) -> Result<crate::canvas_editor::types::EditorStatus, String> {
+    crate::canvas_editor::delete_layer(&args.session_id, args.layer_id)
+}
+
+#[tauri::command]
+pub fn canvas_editor_set_active_layer(
+    args: LayerIdArgs,
+) -> Result<crate::canvas_editor::types::EditorStatus, String> {
+    crate::canvas_editor::set_active_layer(&args.session_id, args.layer_id)
+}
+
+#[tauri::command]
+pub fn canvas_editor_rename_layer(
+    args: RenameLayerArgs,
+) -> Result<crate::canvas_editor::types::EditorStatus, String> {
+    crate::canvas_editor::rename_layer(&args.session_id, args.layer_id, args.name)
+}
+
+#[tauri::command]
+pub fn canvas_editor_set_layer_opacity(
+    args: SetLayerOpacityArgs,
+) -> Result<crate::canvas_editor::types::EditorStatus, String> {
+    crate::canvas_editor::set_layer_opacity(&args.session_id, args.layer_id, args.opacity)
+}
+
+#[tauri::command]
+pub fn canvas_editor_toggle_layer_visibility(
+    args: LayerIdArgs,
+) -> Result<crate::canvas_editor::types::EditorStatus, String> {
+    crate::canvas_editor::toggle_layer_visibility(&args.session_id, args.layer_id)
+}
+
+#[tauri::command]
+pub fn canvas_editor_reorder_layers(
+    args: ReorderLayersArgs,
+) -> Result<crate::canvas_editor::types::EditorStatus, String> {
+    crate::canvas_editor::reorder_layers(&args.session_id, args.ids)
 }

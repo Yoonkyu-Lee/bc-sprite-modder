@@ -83,6 +83,36 @@ export async function redo(sessionId: string): Promise<EditorEventResult> {
   return invoke("canvas_editor_redo", { args: { sessionId } });
 }
 
+export async function createLayerAboveActive(sessionId: string): Promise<EditorStatus> {
+  return invoke("canvas_editor_create_layer_above_active", { args: { sessionId } });
+}
+
+export async function deleteLayer(sessionId: string, layerId: number): Promise<EditorStatus> {
+  return invoke("canvas_editor_delete_layer", { args: { sessionId, layerId } });
+}
+
+export async function setActiveLayer(sessionId: string, layerId: number): Promise<EditorStatus> {
+  return invoke("canvas_editor_set_active_layer", { args: { sessionId, layerId } });
+}
+
+export async function renameLayer(sessionId: string, layerId: number, name: string): Promise<EditorStatus> {
+  return invoke("canvas_editor_rename_layer", { args: { sessionId, layerId, name } });
+}
+
+export async function setLayerOpacity(sessionId: string, layerId: number, opacity: number): Promise<EditorStatus> {
+  return invoke("canvas_editor_set_layer_opacity", {
+    args: { sessionId, layerId, opacity: Math.max(0, Math.min(255, Math.round(opacity))) },
+  });
+}
+
+export async function toggleLayerVisibility(sessionId: string, layerId: number): Promise<EditorStatus> {
+  return invoke("canvas_editor_toggle_layer_visibility", { args: { sessionId, layerId } });
+}
+
+export async function reorderLayers(sessionId: string, ids: number[]): Promise<EditorStatus> {
+  return invoke("canvas_editor_reorder_layers", { args: { sessionId, ids } });
+}
+
 export function applyPatch(bitmap: Uint8ClampedArray, patch: EditorEventResult["patch"]): void {
   if (!patch) return;
   for (let n = 0; n < patch.changedIndices.length; n += 1) {

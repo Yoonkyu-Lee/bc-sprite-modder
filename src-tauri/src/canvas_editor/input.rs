@@ -35,8 +35,8 @@ impl Editor {
                     return None;
                 }
                 let idx = self.idx(p);
-                self.active_color = Self::to_hex(Self::rgba_at(&self.bitmap, idx));
-                self.active_alpha = Self::rgba_at(&self.bitmap, idx)[3];
+                self.active_color = Self::to_hex(Self::rgba_at(self.active_bitmap(), idx));
+                self.active_alpha = Self::rgba_at(self.active_bitmap(), idx)[3];
                 self.message = Some(format!("PICK {}", self.active_color));
                 self.is_pointer_down = false;
                 None
@@ -48,22 +48,22 @@ impl Editor {
                 }
                 self.pointer.action_changes.clear();
                 let idx = self.idx(p);
-                let target = Self::rgba_at(&self.bitmap, idx);
+                let target = Self::rgba_at(self.active_bitmap(), idx);
                 let source = self.active_rgba();
                 let mut changes = HashMap::<u32, PixelChange>::new();
                 for fp in flood_fill(
-                    &self.bitmap,
+                    self.active_bitmap(),
                     self.width as i32,
                     self.height as i32,
                     p,
                     target,
                 ) {
                     let didx = self.idx(fp);
-                    let dst = Self::rgba_at(&self.bitmap, didx);
+                    let dst = Self::rgba_at(self.active_bitmap(), didx);
                     let out = Self::alpha_blend(source, dst);
                     self.set_pixel_with_changes(&mut changes, fp, out);
                 }
-                let patch = Self::patch_from_changes(&changes);
+                let patch = self.patch_from_changes(&changes);
                 if let Some(ref pch) = patch {
                     self.push_history(pch.clone());
                 }
@@ -104,7 +104,7 @@ impl Editor {
                         return None;
                     }
                     self.pointer.move_selection_bounds = Some(bounds);
-                    self.pointer.move_base_bitmap = Some(self.bitmap.clone());
+                    self.pointer.move_base_bitmap = Some(self.active_bitmap().to_vec());
                     self.pointer.move_current_delta = Point { x: 0, y: 0 };
                     self.selection.move_delta = Point { x: 0, y: 0 };
                 }
@@ -195,7 +195,7 @@ impl Editor {
         }
         match self.tool {
             ToolKind::Draw | ToolKind::Erase => {
-                if let Some(patch) = Self::patch_from_changes(&self.pointer.action_changes) {
+                if let Some(patch) = self.patch_from_changes(&self.pointer.action_changes) {
                     self.push_history(patch);
                 }
                 self.pointer.action_changes.clear();

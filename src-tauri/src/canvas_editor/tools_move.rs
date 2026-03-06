@@ -44,7 +44,7 @@ impl Editor {
                 continue;
             }
             mask[*idx as usize] = 1;
-            if Self::rgba_at(&self.bitmap, *idx)[3] > 0 {
+            if Self::rgba_at(self.active_bitmap(), *idx)[3] > 0 {
                 has_opaque = true;
             }
         }
@@ -105,7 +105,7 @@ impl Editor {
     }
 
     pub(crate) fn finalize_move_session(&mut self) -> Option<PixelPatch> {
-        let Some(base) = self.pointer.move_base_bitmap.as_ref() else {
+        let Some(base) = self.pointer.move_base_bitmap.clone() else {
             return None;
         };
         let Some(bounds) = self.pointer.move_selection_bounds else {
@@ -133,16 +133,16 @@ impl Editor {
         for y in min_y..=max_y {
             for x in min_x..=max_x {
                 let idx = self.idx(Point { x, y });
-                let before = Self::rgba_at(base, idx);
-                let after = self.desired_color_for_move_at(idx, delta, base);
+                let before = Self::rgba_at(&base, idx);
+                let after = self.desired_color_for_move_at(idx, delta, &base);
                 if before == after {
                     continue;
                 }
                 changes.insert(idx, PixelChange { before, after });
-                Self::set_rgba(&mut self.bitmap, idx, after);
+                Self::set_rgba(self.active_bitmap_mut(), idx, after);
             }
         }
-        let committed_patch = Self::patch_from_changes(&changes);
+        let committed_patch = self.patch_from_changes(&changes);
         if let Some(ref patch) = committed_patch {
             self.push_history(patch.clone());
         }

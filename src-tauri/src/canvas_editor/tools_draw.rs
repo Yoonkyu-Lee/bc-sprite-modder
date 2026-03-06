@@ -14,7 +14,7 @@ impl Editor {
             }
             self.set_pixel_with_changes(&mut local, p, rgba);
             let idx = self.idx(p);
-            let after = Self::rgba_at(&self.bitmap, idx);
+            let after = Self::rgba_at(self.active_bitmap(), idx);
             let before = local.get(&idx).map(|c| c.before).unwrap_or([0, 0, 0, 0]);
             action
                 .entry(idx)
@@ -22,7 +22,7 @@ impl Editor {
                 .or_insert(PixelChange { before, after });
         }
         self.pointer.action_changes = action;
-        Self::patch_from_changes(&local)
+        self.patch_from_changes(&local)
     }
 
     pub(crate) fn draw_segment_blended(&mut self, from: Point, to: Point, src_rgba: [u8; 4]) -> Option<PixelPatch> {
@@ -38,10 +38,10 @@ impl Editor {
             if action.contains_key(&idx) {
                 continue;
             }
-            let dst = Self::rgba_at(&self.bitmap, idx);
+            let dst = Self::rgba_at(self.active_bitmap(), idx);
             let out = Self::alpha_blend(src_rgba, dst);
             self.set_pixel_with_changes(&mut local, p, out);
-            let after = Self::rgba_at(&self.bitmap, idx);
+            let after = Self::rgba_at(self.active_bitmap(), idx);
             let before = local.get(&idx).map(|c| c.before).unwrap_or([0, 0, 0, 0]);
             action
                 .entry(idx)
@@ -49,6 +49,6 @@ impl Editor {
                 .or_insert(PixelChange { before, after });
         }
         self.pointer.action_changes = action;
-        Self::patch_from_changes(&local)
+        self.patch_from_changes(&local)
     }
 }

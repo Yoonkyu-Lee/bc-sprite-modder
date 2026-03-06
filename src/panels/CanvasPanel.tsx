@@ -12,27 +12,105 @@ import {
 import { CanvasRenderer, screenToPixel } from "../features/canvas-editor/render";
 import {
   applyPatch,
+  createLayerAboveActive,
   createSession,
   decodeRgbaBase64,
+  deleteLayer,
   dispatchPointer,
   dispatchShortcut,
   getMovePreviewData,
   getSnapshot,
+  renameLayer,
+  reorderLayers,
   redo,
   setActiveAlpha,
   setActiveColor,
+  setActiveLayer,
+  setLayerOpacity,
   setSelectionMode,
   setTool,
+  toggleLayerVisibility,
   setView,
   undo,
 } from "../features/canvas-editor/backend";
-import type { EditorStatus, Point, SelectionMode, ToolKind } from "../features/canvas-editor/types";
+import type { EditorStatus, LayerStatus, Point, SelectionMode, ToolKind } from "../features/canvas-editor/types";
 import type { Rect } from "../features/canvas-editor/types";
 
 const CANVAS_SIZE = 1024;
 const ZOOM_MIN = 0.2;
 const ZOOM_MAX = 64;
 const ZOOM_SCRUB_SENSITIVITY = 0.005;
+
+type PaletteState = {
+  h: number;
+  s: number;
+  v: number;
+  a: number;
+};
+
+function clamp(n: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, n));
+}
+
+function hexToRgb(hex: string): { r: number; g: number; b: number } {
+  const n = hex.trim().replace(/^#/, "");
+  if (n.length !== 6) return { r: 255, g: 255, b: 255 };
+  const v = Number.parseInt(n, 16);
+  if (Number.isNaN(v)) return { r: 255, g: 255, b: 255 };
+  return {
+    r: (v >> 16) & 0xff,
+    g: (v >> 8) & 0xff,
+    b: v & 0xff,
+  };
+}
+
+function rgbToHex(r: number, g: number, b: number): string {
+  const rr = clamp(Math.round(r), 0, 255);
+  const gg = clamp(Math.round(g), 0, 255);
+  const bb = clamp(Math.round(b), 0, 255);
+  return `#${rr.toString(16).padStart(2, "0")}${gg.toString(16).padStart(2, "0")}${bb.toString(16).padStart(2, "0")}`;
+}
+
+function rgbToHsv(r: number, g: number, b: number): { h: number; s: number; v: number } {
+  const rn = r / 255;
+  const gn = g / 255;
+  const bn = b / 255;
+  const max = Math.max(rn, gn, bn);
+  const min = Math.min(rn, gn, bn);
+  const d = max - min;
+  let h = 0;
+  if (d !== 0) {
+    if (max === rn) h = ((gn - bn) / d) % 6;
+    else if (max === gn) h = (bn - rn) / d + 2;
+    else h = (rn - gn) / d + 4;
+    h *= 60;
+    if (h < 0) h += 360;
+  }
+  const s = max === 0 ? 0 : d / max;
+  const v = max;
+  return { h, s, v };
+}
+
+function hsvToRgb(h: number, s: number, v: number): { r: number; g: number; b: number } {
+  const hh = ((h % 360) + 360) % 360;
+  const c = v * s;
+  const x = c * (1 - Math.abs(((hh / 60) % 2) - 1));
+  const m = v - c;
+  let rn = 0;
+  let gn = 0;
+  let bn = 0;
+  if (hh < 60) [rn, gn, bn] = [c, x, 0];
+  else if (hh < 120) [rn, gn, bn] = [x, c, 0];
+  else if (hh < 180) [rn, gn, bn] = [0, c, x];
+  else if (hh < 240) [rn, gn, bn] = [0, x, c];
+  else if (hh < 300) [rn, gn, bn] = [x, 0, c];
+  else [rn, gn, bn] = [c, 0, x];
+  return {
+    r: Math.round((rn + m) * 255),
+    g: Math.round((gn + m) * 255),
+    b: Math.round((bn + m) * 255),
+  };
+}
 
 type MovePreviewState = {
   bounds: Rect;
@@ -41,6 +119,10 @@ type MovePreviewState = {
   maskVersion: number;
   pixels: Uint8ClampedArray;
   pixelsVersion: number;
+  baseBitmap: Uint8ClampedArray;
+  baseBitmapVersion: number;
+  overlayBitmap: Uint8ClampedArray;
+  overlayBitmapVersion: number;
 };
 
 const TOOL_BUTTONS: { tool: ToolKind; label: string; hotkey: string }[] = [
@@ -59,6 +141,8 @@ function fallbackStatus(): EditorStatus {
     tool: "draw",
     activeColor: "#ffffff",
     activeAlpha: 255,
+    activeLayerId: 1,
+    layers: [{ id: 1, name: "Layer 1", visible: true, opacity: 255 }],
     selection: {
       rect: null,
       draftRect: null,
@@ -91,8 +175,18 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
   const [revision, setRevision] = useState(0);
   const [isFocused, setIsFocused] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [palette, setPalette] = useState<PaletteState>({ h: 0, s: 0, v: 1, a: 255 });
+  const [dragLayerId, setDragLayerId] = useState<number | null>(null);
+  const [layerNameDrafts, setLayerNameDrafts] = useState<Record<number, string>>({});
   const [zoomToolLatched, setZoomToolLatched] = useState(false);
   const [zoomToolHeld, setZoomToolHeld] = useState(false);
+  const paletteDragModeRef = useRef<"sv" | "h" | "a" | null>(null);
+  const svRef = useRef<HTMLDivElement>(null);
+  const hueRef = useRef<HTMLDivElement>(null);
+  const alphaRef = useRef<HTMLDivElement>(null);
+  const palettePendingRef = useRef<{ hex: string; alpha: number } | null>(null);
+  const paletteRafRef = useRef<number | null>(null);
   const panDragStartRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
   const zoomDragRef = useRef<{
     startClientX: number;
@@ -114,34 +208,33 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
   }
 
   const buildMovePreview = useCallback(
-    (baseBitmap: Uint8ClampedArray, bounds: Rect, selectedIndices: number[]): MovePreviewState => {
-      const width = Math.max(1, bounds.width);
-      const height = Math.max(1, bounds.height);
+    (
+      bounds: Rect,
+      selectedIndices: number[],
+      selectedBlock: Uint8ClampedArray,
+      underlay: Uint8ClampedArray,
+      overlay: Uint8ClampedArray
+    ): MovePreviewState => {
       const mask = new Uint8Array(CANVAS_SIZE * CANVAS_SIZE);
-      const pixels = new Uint8ClampedArray(width * height * 4);
       for (let i = 0; i < selectedIndices.length; i += 1) {
         const idx = selectedIndices[i];
-        if (idx < 0 || idx >= CANVAS_SIZE * CANVAS_SIZE) continue;
-        mask[idx] = 255;
-        const x = idx % CANVAS_SIZE;
-        const y = Math.floor(idx / CANVAS_SIZE);
-        const lx = x - bounds.x;
-        const ly = y - bounds.y;
-        if (lx < 0 || ly < 0 || lx >= width || ly >= height) continue;
-        const src = idx * 4;
-        const dst = (ly * width + lx) * 4;
-        pixels[dst] = baseBitmap[src];
-        pixels[dst + 1] = baseBitmap[src + 1];
-        pixels[dst + 2] = baseBitmap[src + 2];
-        pixels[dst + 3] = baseBitmap[src + 3];
+        if (idx >= 0 && idx < CANVAS_SIZE * CANVAS_SIZE) {
+          mask[idx] = 255;
+        }
       }
+      const pixels = selectedBlock;
+      const ts = Date.now();
       return {
         bounds,
         delta: { x: 0, y: 0 },
         mask,
-        maskVersion: Date.now(),
+        maskVersion: ts,
         pixels,
-        pixelsVersion: Date.now() + 1,
+        pixelsVersion: ts + 1,
+        baseBitmap: underlay,
+        baseBitmapVersion: ts + 2,
+        overlayBitmap: overlay,
+        overlayBitmapVersion: ts + 3,
       };
     },
     []
@@ -153,6 +246,26 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
       setLoadError(err instanceof Error ? err.message : String(err));
     });
   }, []);
+
+  const pushPaletteToBackend = useCallback(
+    (hex: string, alpha: number) => {
+      palettePendingRef.current = { hex, alpha: clamp(Math.round(alpha), 0, 255) };
+      if (paletteRafRef.current != null) return;
+      paletteRafRef.current = requestAnimationFrame(() => {
+        paletteRafRef.current = null;
+        const payload = palettePendingRef.current;
+        palettePendingRef.current = null;
+        if (!payload) return;
+        enqueue(async () => {
+          const colorStatus = await setActiveColor(sessionIdRef.current, payload.hex);
+          const alphaStatus = await setActiveAlpha(sessionIdRef.current, payload.alpha);
+          setStatus(alphaStatus ?? colorStatus);
+          setRevision((v) => v + 1);
+        });
+      });
+    },
+    [enqueue]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -177,9 +290,11 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
     const canvas = canvasRef.current;
     const renderer = rendererRef.current;
     if (!canvas || !renderer || !bitmap) return;
+    const renderBitmap = movePreview?.baseBitmap ?? bitmap;
+    const renderBitmapVersion = movePreview?.baseBitmapVersion ?? bitmapVersion;
     renderer.render(canvas, {
-      bitmap,
-      bitmapVersion,
+      bitmap: renderBitmap,
+      bitmapVersion: renderBitmapVersion,
       imageWidth: CANVAS_SIZE,
       imageHeight: CANVAS_SIZE,
       tool: status.tool,
@@ -214,8 +329,28 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
       if (viewRafRef.current != null) {
         cancelAnimationFrame(viewRafRef.current);
       }
+      if (paletteRafRef.current != null) {
+        cancelAnimationFrame(paletteRafRef.current);
+      }
     };
   }, []);
+
+  useEffect(() => {
+    if (paletteDragModeRef.current) return;
+    const { r, g, b } = hexToRgb(status.activeColor);
+    const hsv = rgbToHsv(r, g, b);
+    setPalette({ h: hsv.h, s: hsv.s, v: hsv.v, a: status.activeAlpha });
+  }, [status.activeColor, status.activeAlpha]);
+
+  useEffect(() => {
+    setLayerNameDrafts((prev) => {
+      const next: Record<number, string> = {};
+      for (const layer of status.layers) {
+        next[layer.id] = prev[layer.id] ?? layer.name;
+      }
+      return next;
+    });
+  }, [status.layers]);
 
   const focusPanel = () => rootRef.current?.focus();
   const isZoomToolActive = zoomToolLatched || zoomToolHeld;
@@ -325,7 +460,13 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
       setStatus(result.status);
       if (result.status.tool === "move" && result.status.selection.moving) {
         const previewData = await getMovePreviewData(sessionIdRef.current);
-        const preview = buildMovePreview(bitmap, previewData.bounds, previewData.selectedIndices);
+        const preview = buildMovePreview(
+          previewData.bounds,
+          previewData.selectedIndices,
+          decodeRgbaBase64(previewData.selectedBlockRgbaBase64),
+          decodeRgbaBase64(previewData.underlayRgbaBase64),
+          decodeRgbaBase64(previewData.overlayRgbaBase64)
+        );
         preview.delta = result.status.selection.moveDelta;
         setMovePreview(preview);
       } else {
@@ -581,21 +722,74 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
     });
   };
 
-  const onColorChange = (hex: string) => {
-    enqueue(async () => {
-      const next = await setActiveColor(sessionIdRef.current, hex);
-      setStatus(next);
-      setRevision((v) => v + 1);
-    });
-  };
+  const applyPalette = useCallback(
+    (next: PaletteState) => {
+      const safe: PaletteState = {
+        h: clamp(next.h, 0, 360),
+        s: clamp(next.s, 0, 1),
+        v: clamp(next.v, 0, 1),
+        a: clamp(Math.round(next.a), 0, 255),
+      };
+      setPalette(safe);
+      const rgb = hsvToRgb(safe.h, safe.s, safe.v);
+      const hex = rgbToHex(rgb.r, rgb.g, rgb.b);
+      pushPaletteToBackend(hex, safe.a);
+    },
+    [pushPaletteToBackend]
+  );
 
-  const onAlphaChange = (alpha: number) => {
-    enqueue(async () => {
-      const next = await setActiveAlpha(sessionIdRef.current, alpha);
-      setStatus(next);
-      setRevision((v) => v + 1);
-    });
-  };
+  const updateSvFromClient = useCallback(
+    (clientX: number, clientY: number) => {
+      const el = svRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const s = clamp((clientX - r.left) / r.width, 0, 1);
+      const v = 1 - clamp((clientY - r.top) / r.height, 0, 1);
+      applyPalette({ ...palette, s, v });
+    },
+    [palette, applyPalette]
+  );
+
+  const updateHueFromClient = useCallback(
+    (clientX: number) => {
+      const el = hueRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const t = clamp((clientX - r.left) / r.width, 0, 1);
+      applyPalette({ ...palette, h: t * 360 });
+    },
+    [palette, applyPalette]
+  );
+
+  const updateAlphaFromClient = useCallback(
+    (clientX: number) => {
+      const el = alphaRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const t = clamp((clientX - r.left) / r.width, 0, 1);
+      applyPalette({ ...palette, a: Math.round(t * 255) });
+    },
+    [palette, applyPalette]
+  );
+
+  useEffect(() => {
+    const onMove = (event: PointerEvent) => {
+      const mode = paletteDragModeRef.current;
+      if (!mode) return;
+      if (mode === "sv") updateSvFromClient(event.clientX, event.clientY);
+      else if (mode === "h") updateHueFromClient(event.clientX);
+      else if (mode === "a") updateAlphaFromClient(event.clientX);
+    };
+    const onUp = () => {
+      paletteDragModeRef.current = null;
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [updateSvFromClient, updateHueFromClient, updateAlphaFromClient]);
 
   const onUndo = () => {
     if (!bitmap) return;
@@ -625,11 +819,90 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
     });
   };
 
+  const applyStatusWithSnapshot = useCallback(
+    async (next: EditorStatus, refreshBitmap: boolean) => {
+      setStatus(next);
+      if (refreshBitmap) {
+        const snapshot = await getSnapshot(sessionIdRef.current);
+        setBitmap(decodeRgbaBase64(snapshot.rgbaBase64));
+        setBitmapVersion((v) => v + 1);
+      }
+      setMovePreview(null);
+      setRevision((v) => v + 1);
+    },
+    []
+  );
+
+  const onCreateLayer = () => {
+    enqueue(async () => {
+      const next = await createLayerAboveActive(sessionIdRef.current);
+      await applyStatusWithSnapshot(next, true);
+    });
+  };
+
+  const onDeleteLayer = (layerId: number) => {
+    enqueue(async () => {
+      const next = await deleteLayer(sessionIdRef.current, layerId);
+      await applyStatusWithSnapshot(next, true);
+    });
+  };
+
+  const onSelectLayer = (layerId: number) => {
+    enqueue(async () => {
+      const next = await setActiveLayer(sessionIdRef.current, layerId);
+      await applyStatusWithSnapshot(next, false);
+    });
+  };
+
+  const onToggleLayerVisibility = (layerId: number) => {
+    enqueue(async () => {
+      const next = await toggleLayerVisibility(sessionIdRef.current, layerId);
+      await applyStatusWithSnapshot(next, true);
+    });
+  };
+
+  const onSetLayerOpacity = (layerId: number, opacity: number) => {
+    enqueue(async () => {
+      const next = await setLayerOpacity(sessionIdRef.current, layerId, opacity);
+      await applyStatusWithSnapshot(next, true);
+    });
+  };
+
+  const commitLayerName = (layer: LayerStatus) => {
+    const draft = (layerNameDrafts[layer.id] ?? layer.name).trim();
+    if (!draft || draft === layer.name) {
+      setLayerNameDrafts((prev) => ({ ...prev, [layer.id]: layer.name }));
+      return;
+    }
+    enqueue(async () => {
+      const next = await renameLayer(sessionIdRef.current, layer.id, draft);
+      await applyStatusWithSnapshot(next, false);
+    });
+  };
+
+  const onDropLayer = (targetLayerId: number) => {
+    if (dragLayerId == null || dragLayerId === targetLayerId) return;
+    const ids = status.layers.map((l) => l.id);
+    const from = ids.indexOf(dragLayerId);
+    const to = ids.indexOf(targetLayerId);
+    if (from < 0 || to < 0) return;
+    ids.splice(from, 1);
+    ids.splice(to, 0, dragLayerId);
+    setDragLayerId(null);
+    enqueue(async () => {
+      const next = await reorderLayers(sessionIdRef.current, ids);
+      await applyStatusWithSnapshot(next, true);
+    });
+  };
+
   const statusLine = useMemo(() => {
     if (loadError) return `Error: ${loadError}`;
     if (isZoomToolActive) return `ZOOM TOOL (${zoomToolHeld ? "hold" : "latched"})`;
     return status.message ?? "Ready";
   }, [status.message, loadError, isZoomToolActive, zoomToolHeld]);
+
+  const paletteRgb = useMemo(() => hsvToRgb(palette.h, palette.s, palette.v), [palette]);
+  const paletteHex = useMemo(() => rgbToHex(paletteRgb.r, paletteRgb.g, paletteRgb.b), [paletteRgb]);
 
   return (
     <div
@@ -657,21 +930,129 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
             {item.label}
           </button>
         ))}
-        <label className="color-input">
-          COLOR
-          <input type="color" value={status.activeColor} onChange={(e) => onColorChange(e.target.value)} />
-        </label>
-        <label className="alpha-input">
-          ALPHA {status.activeAlpha}
-          <input
-            type="range"
-            min={0}
-            max={255}
-            step={1}
-            value={status.activeAlpha}
-            onChange={(e) => onAlphaChange(Number(e.target.value))}
-          />
-        </label>
+        <div className="palette-pop">
+          <button
+            type="button"
+            className={paletteOpen ? "active" : ""}
+            onClick={() => setPaletteOpen((v) => !v)}
+            title="Palette"
+          >
+            PALETTE
+          </button>
+          {paletteOpen ? (
+            <div className="palette-popover">
+              <div
+                ref={svRef}
+                className="palette-sv"
+                style={{ backgroundColor: `hsl(${palette.h} 100% 50%)` }}
+                onPointerDown={(e) => {
+                  paletteDragModeRef.current = "sv";
+                  updateSvFromClient(e.clientX, e.clientY);
+                }}
+              >
+                <div className="palette-sv-white" />
+                <div className="palette-sv-black" />
+                <div
+                  className="palette-cursor"
+                  style={{
+                    left: `${palette.s * 100}%`,
+                    top: `${(1 - palette.v) * 100}%`,
+                  }}
+                />
+              </div>
+              <div
+                ref={hueRef}
+                className="palette-hue"
+                onPointerDown={(e) => {
+                  paletteDragModeRef.current = "h";
+                  updateHueFromClient(e.clientX);
+                }}
+              >
+                <div
+                  className="palette-bar-cursor"
+                  style={{
+                    left: `${(palette.h / 360) * 100}%`,
+                  }}
+                />
+              </div>
+              <div
+                ref={alphaRef}
+                className="palette-alpha"
+                style={{
+                  backgroundImage: `linear-gradient(to right, rgba(0,0,0,0) 0%, ${paletteHex} 100%),
+                    linear-gradient(45deg, #737b88 25%, transparent 25%),
+                    linear-gradient(-45deg, #737b88 25%, transparent 25%),
+                    linear-gradient(45deg, transparent 75%, #737b88 75%),
+                    linear-gradient(-45deg, transparent 75%, #737b88 75%)`,
+                  backgroundSize: "100% 100%, 12px 12px, 12px 12px, 12px 12px, 12px 12px",
+                  backgroundPosition: "0 0, 0 0, 0 6px, 6px -6px, -6px 0",
+                  backgroundRepeat: "no-repeat, repeat, repeat, repeat, repeat",
+                }}
+                onPointerDown={(e) => {
+                  paletteDragModeRef.current = "a";
+                  updateAlphaFromClient(e.clientX);
+                }}
+              >
+                <div
+                  className="palette-bar-cursor"
+                  style={{
+                    left: `${(palette.a / 255) * 100}%`,
+                  }}
+                />
+              </div>
+              <div className="palette-inputs">
+                <input
+                  className="palette-hex"
+                  value={paletteHex}
+                  onChange={(e) => {
+                    const { r, g, b } = hexToRgb(e.target.value);
+                    const hsv = rgbToHsv(r, g, b);
+                    applyPalette({ ...palette, h: hsv.h, s: hsv.s, v: hsv.v });
+                  }}
+                />
+                <div className="palette-rgba">
+                  <input
+                    type="number"
+                    min={0}
+                    max={255}
+                    value={paletteRgb.r}
+                    onChange={(e) => {
+                      const next = rgbToHsv(Number(e.target.value), paletteRgb.g, paletteRgb.b);
+                      applyPalette({ ...palette, h: next.h, s: next.s, v: next.v });
+                    }}
+                  />
+                  <input
+                    type="number"
+                    min={0}
+                    max={255}
+                    value={paletteRgb.g}
+                    onChange={(e) => {
+                      const next = rgbToHsv(paletteRgb.r, Number(e.target.value), paletteRgb.b);
+                      applyPalette({ ...palette, h: next.h, s: next.s, v: next.v });
+                    }}
+                  />
+                  <input
+                    type="number"
+                    min={0}
+                    max={255}
+                    value={paletteRgb.b}
+                    onChange={(e) => {
+                      const next = rgbToHsv(paletteRgb.r, paletteRgb.g, Number(e.target.value));
+                      applyPalette({ ...palette, h: next.h, s: next.s, v: next.v });
+                    }}
+                  />
+                  <input
+                    type="number"
+                    min={0}
+                    max={255}
+                    value={palette.a}
+                    onChange={(e) => applyPalette({ ...palette, a: Number(e.target.value) })}
+                  />
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </div>
         <button type="button" disabled={!status.canUndo} onClick={onUndo}>
           Undo
         </button>
@@ -709,17 +1090,90 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
         </div>
       </div>
       <div className="canvas-stage">
-        <canvas
-          ref={canvasRef}
-          className="canvas-surface"
-          style={{ cursor: canvasCursor }}
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          onPointerCancel={handlePointerUp}
-          onPointerLeave={handlePointerLeave}
-          onWheel={handleWheel}
-        />
+        <div className="canvas-stage-main">
+          <canvas
+            ref={canvasRef}
+            className="canvas-surface"
+            style={{ cursor: canvasCursor }}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
+            onPointerLeave={handlePointerLeave}
+            onWheel={handleWheel}
+          />
+        </div>
+        <aside className="canvas-layers">
+          <div className="canvas-layers-header">
+            <span>Layers</span>
+            <div className="canvas-layers-actions">
+              <button type="button" onClick={onCreateLayer} title="Create Layer">
+                +
+              </button>
+              <button
+                type="button"
+                onClick={() => onDeleteLayer(status.activeLayerId)}
+                disabled={status.layers.length <= 1}
+                title="Delete Active Layer"
+              >
+                -
+              </button>
+            </div>
+          </div>
+          <ul className="canvas-layer-list">
+            {status.layers.map((layer) => (
+              <li
+                key={layer.id}
+                className={layer.id === status.activeLayerId ? "active" : ""}
+                draggable
+                onDragStart={() => setDragLayerId(layer.id)}
+                onDragEnd={() => setDragLayerId(null)}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={() => onDropLayer(layer.id)}
+              >
+                <div className="layer-row">
+                  <button
+                    type="button"
+                    className={`vis ${layer.visible ? "on" : "off"}`}
+                    onClick={() => onToggleLayerVisibility(layer.id)}
+                    title="Toggle visibility"
+                  >
+                    {layer.visible ? "V" : "-"}
+                  </button>
+                  <button type="button" className="layer-pick" onClick={() => onSelectLayer(layer.id)}>
+                    {layer.id === status.activeLayerId ? "*" : " "}
+                  </button>
+                  <input
+                    value={layerNameDrafts[layer.id] ?? layer.name}
+                    onChange={(e) =>
+                      setLayerNameDrafts((prev) => ({
+                        ...prev,
+                        [layer.id]: e.target.value,
+                      }))
+                    }
+                    onBlur={() => commitLayerName(layer)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        (e.currentTarget as HTMLInputElement).blur();
+                      }
+                    }}
+                  />
+                </div>
+                <div className="layer-opacity">
+                  <span>{layer.opacity}</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={255}
+                    step={1}
+                    value={layer.opacity}
+                    onChange={(e) => onSetLayerOpacity(layer.id, Number(e.target.value))}
+                  />
+                </div>
+              </li>
+            ))}
+          </ul>
+        </aside>
       </div>
       <div className="canvas-status">
         <span>{`Tool: ${(isZoomToolActive ? "zoom" : status.tool).toUpperCase()}`}</span>

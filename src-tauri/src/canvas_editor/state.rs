@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use super::types::{EditorStatus, PixelPatch, Point, Rect, SelectionMode, SelectionState, ToolKind};
+use super::types::{EditorStatus, LayerStatus, PixelPatch, Point, Rect, SelectionMode, SelectionState, ToolKind};
 
 #[derive(Clone)]
 pub(crate) struct PixelChange {
@@ -24,7 +24,8 @@ pub(crate) struct PointerSession {
 pub(crate) struct Editor {
     pub(crate) width: u32,
     pub(crate) height: u32,
-    pub(crate) bitmap: Vec<u8>,
+    pub(crate) layers: Vec<Layer>,
+    pub(crate) active_layer_index: usize,
     pub(crate) tool: ToolKind,
     pub(crate) active_color: String,
     pub(crate) active_alpha: u8,
@@ -37,14 +38,31 @@ pub(crate) struct Editor {
     pub(crate) redo_stack: Vec<PixelPatch>,
     pub(crate) selected_indices: HashSet<u32>,
     pub(crate) pointer: PointerSession,
+    pub(crate) next_layer_id: u32,
+}
+
+pub(crate) struct Layer {
+    pub(crate) id: u32,
+    pub(crate) name: String,
+    pub(crate) visible: bool,
+    pub(crate) opacity: u8,
+    pub(crate) bitmap: Vec<u8>,
 }
 
 impl Editor {
     pub(crate) fn new(width: u32, height: u32) -> Self {
+        let layer_bitmap = vec![0u8; (width * height * 4) as usize];
         Self {
             width,
             height,
-            bitmap: vec![0u8; (width * height * 4) as usize],
+            layers: vec![Layer {
+                id: 1,
+                name: "Layer 1".to_string(),
+                visible: true,
+                opacity: 255,
+                bitmap: layer_bitmap,
+            }],
+            active_layer_index: 0,
             tool: ToolKind::Draw,
             active_color: "#ffffff".to_string(),
             active_alpha: 255,
@@ -65,6 +83,7 @@ impl Editor {
             redo_stack: Vec::new(),
             selected_indices: HashSet::new(),
             pointer: PointerSession::default(),
+            next_layer_id: 2,
         }
     }
 
@@ -75,6 +94,17 @@ impl Editor {
             tool: self.tool,
             active_color: self.active_color.clone(),
             active_alpha: self.active_alpha,
+            active_layer_id: self.active_layer().id,
+            layers: self
+                .layers
+                .iter()
+                .map(|l| LayerStatus {
+                    id: l.id,
+                    name: l.name.clone(),
+                    visible: l.visible,
+                    opacity: l.opacity,
+                })
+                .collect(),
             selection: self.selection.clone(),
             message: self.message.clone(),
             can_undo: !self.undo_stack.is_empty(),
@@ -135,6 +165,31 @@ impl Editor {
         p.y as u32 * self.width + p.x as u32
     }
 
+    pub(crate) fn active_layer(&self) -> &Layer {
+        &self.layers[self.active_layer_index]
+    }
+
+    pub(crate) fn active_layer_mut(&mut self) -> &mut Layer {
+        &mut self.layers[self.active_layer_index]
+    }
+
+    pub(crate) fn active_bitmap(&self) -> &[u8] {
+        &self.active_layer().bitmap
+    }
+
+    pub(crate) fn active_bitmap_mut(&mut self) -> &mut [u8] {
+        &mut self.active_layer_mut().bitmap
+    }
+
+    pub(crate) fn layer_index_by_id(&self, layer_id: u32) -> Option<usize> {
+        self.layers.iter().position(|l| l.id == layer_id)
+    }
+
+    pub(crate) fn bitmap_mut_for_layer_id(&mut self, layer_id: u32) -> Option<&mut [u8]> {
+        let idx = self.layer_index_by_id(layer_id)?;
+        Some(&mut self.layers[idx].bitmap)
+    }
+
     pub(crate) fn in_bounds(&self, p: Point) -> bool {
         p.x >= 0 && p.y >= 0 && p.x < self.width as i32 && p.y < self.height as i32
     }
@@ -159,7 +214,7 @@ impl Editor {
         rgba: [u8; 4],
     ) {
         let idx = self.idx(p);
-        let before = Self::rgba_at(&self.bitmap, idx);
+        let before = Self::rgba_at(self.active_bitmap(), idx);
         if before == rgba {
             return;
         }
@@ -167,7 +222,32 @@ impl Editor {
             .entry(idx)
             .and_modify(|c| c.after = rgba)
             .or_insert(PixelChange { before, after: rgba });
-        Self::set_rgba(&mut self.bitmap, idx, rgba);
+        Self::set_rgba(self.active_bitmap_mut(), idx, rgba);
+    }
+
+    pub(crate) fn composite_bitmap(&self) -> Vec<u8> {
+        let mut out = vec![0u8; (self.width * self.height * 4) as usize];
+        for layer in &self.layers {
+            if !layer.visible || layer.opacity == 0 {
+                continue;
+            }
+            for idx in 0..(self.width * self.height) {
+                let src_raw = Self::rgba_at(&layer.bitmap, idx);
+                if src_raw[3] == 0 {
+                    continue;
+                }
+                let src = [
+                    src_raw[0],
+                    src_raw[1],
+                    src_raw[2],
+                    ((src_raw[3] as u16 * layer.opacity as u16) / 255) as u8,
+                ];
+                let dst = Self::rgba_at(&out, idx);
+                let blended = Self::alpha_blend(src, dst);
+                Self::set_rgba(&mut out, idx, blended);
+            }
+        }
+        out
     }
 
     pub(crate) fn selection_bounds(indices: &HashSet<u32>, width: u32) -> Option<Rect> {
@@ -224,5 +304,112 @@ impl Editor {
         self.selection.draft_lasso_points.clear();
         self.selection.moving = false;
         self.selection.move_delta = Point { x: 0, y: 0 };
+    }
+
+    pub(crate) fn create_layer_above_active(&mut self) {
+        if self.pointer.move_base_bitmap.is_some() {
+            self.cancel_move_session();
+        }
+        let id = self.next_layer_id;
+        self.next_layer_id += 1;
+        let insert_at = self.active_layer_index;
+        let layer = Layer {
+            id,
+            name: format!("Layer {}", id),
+            visible: true,
+            opacity: 255,
+            bitmap: vec![0u8; (self.width * self.height * 4) as usize],
+        };
+        self.layers.insert(insert_at, layer);
+        self.active_layer_index = insert_at;
+        self.clear_selection_visual_state();
+    }
+
+    pub(crate) fn delete_layer_by_id(&mut self, layer_id: u32) -> Result<(), String> {
+        if self.layers.len() <= 1 {
+            return Err("cannot delete the last layer".to_string());
+        }
+        if self.pointer.move_base_bitmap.is_some() {
+            self.cancel_move_session();
+        }
+        let Some(idx) = self.layer_index_by_id(layer_id) else {
+            return Err(format!("layer not found: {layer_id}"));
+        };
+        self.layers.remove(idx);
+        if idx < self.layers.len() {
+            self.active_layer_index = idx;
+        } else {
+            self.active_layer_index = self.layers.len() - 1;
+        }
+        self.clear_selection_visual_state();
+        Ok(())
+    }
+
+    pub(crate) fn set_active_layer_by_id(&mut self, layer_id: u32) -> Result<(), String> {
+        let Some(idx) = self.layer_index_by_id(layer_id) else {
+            return Err(format!("layer not found: {layer_id}"));
+        };
+        if self.pointer.move_base_bitmap.is_some() {
+            let _ = self.finalize_move_session();
+        }
+        self.active_layer_index = idx;
+        self.clear_selection_visual_state();
+        Ok(())
+    }
+
+    pub(crate) fn rename_layer(&mut self, layer_id: u32, name: String) -> Result<(), String> {
+        let Some(idx) = self.layer_index_by_id(layer_id) else {
+            return Err(format!("layer not found: {layer_id}"));
+        };
+        let n = name.trim();
+        if n.is_empty() {
+            return Err("layer name cannot be empty".to_string());
+        }
+        self.layers[idx].name = n.to_string();
+        Ok(())
+    }
+
+    pub(crate) fn set_layer_opacity(&mut self, layer_id: u32, opacity: u8) -> Result<(), String> {
+        let Some(idx) = self.layer_index_by_id(layer_id) else {
+            return Err(format!("layer not found: {layer_id}"));
+        };
+        self.layers[idx].opacity = opacity;
+        Ok(())
+    }
+
+    pub(crate) fn toggle_layer_visibility(&mut self, layer_id: u32) -> Result<(), String> {
+        let Some(idx) = self.layer_index_by_id(layer_id) else {
+            return Err(format!("layer not found: {layer_id}"));
+        };
+        self.layers[idx].visible = !self.layers[idx].visible;
+        Ok(())
+    }
+
+    pub(crate) fn reorder_layers(&mut self, ids: Vec<u32>) -> Result<(), String> {
+        if ids.len() != self.layers.len() {
+            return Err("layer id count mismatch".to_string());
+        }
+        let current_ids: std::collections::HashSet<u32> = self.layers.iter().map(|l| l.id).collect();
+        let incoming_ids: std::collections::HashSet<u32> = ids.iter().copied().collect();
+        if current_ids != incoming_ids {
+            return Err("layer id set mismatch".to_string());
+        }
+
+        let active_id = self.active_layer().id;
+        let mut by_id = HashMap::new();
+        for layer in self.layers.drain(..) {
+            by_id.insert(layer.id, layer);
+        }
+        let mut reordered = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(layer) = by_id.remove(&id) {
+                reordered.push(layer);
+            }
+        }
+        self.layers = reordered;
+        self.active_layer_index = self
+            .layer_index_by_id(active_id)
+            .ok_or("active layer missing after reorder".to_string())?;
+        Ok(())
     }
 }

@@ -46,12 +46,23 @@ pub struct SelectionState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LayerStatus {
+    pub id: u32,
+    pub name: String,
+    pub visible: bool,
+    pub opacity: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EditorStatus {
     pub width: u32,
     pub height: u32,
     pub tool: ToolKind,
     pub active_color: String,
     pub active_alpha: u8,
+    pub active_layer_id: u32,
+    pub layers: Vec<LayerStatus>,
     pub selection: SelectionState,
     pub message: Option<String>,
     pub can_undo: bool,
@@ -64,6 +75,7 @@ pub struct EditorStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PixelPatch {
+    pub layer_id: u32,
     pub changed_indices: Vec<u32>,
     pub before: Vec<u8>,
     pub after: Vec<u8>,
@@ -108,6 +120,10 @@ pub struct SnapshotResult {
 pub struct MovePreviewData {
     pub bounds: Rect,
     pub selected_indices: Vec<u32>,
+    pub selected_block_rgba_base64: String,
+    pub under_selection_rgba_base64: String,
+    pub underlay_rgba_base64: String,
+    pub overlay_rgba_base64: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

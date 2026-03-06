@@ -39,6 +39,13 @@ pub fn run() {
             commands::canvas_editor::canvas_editor_set_view,
             commands::canvas_editor::canvas_editor_undo,
             commands::canvas_editor::canvas_editor_redo,
+            commands::canvas_editor::canvas_editor_create_layer_above_active,
+            commands::canvas_editor::canvas_editor_delete_layer,
+            commands::canvas_editor::canvas_editor_set_active_layer,
+            commands::canvas_editor::canvas_editor_rename_layer,
+            commands::canvas_editor::canvas_editor_set_layer_opacity,
+            commands::canvas_editor::canvas_editor_toggle_layer_visibility,
+            commands::canvas_editor::canvas_editor_reorder_layers,
         ])
         .setup(|_app| {
             eprintln!("[init] Tauri setup (윈도우 생성 직전)");

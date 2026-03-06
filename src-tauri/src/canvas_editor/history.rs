@@ -6,13 +6,14 @@ use super::types::{EditorEventResult, PixelPatch};
 impl Editor {
     fn reversed_patch(patch: &PixelPatch) -> PixelPatch {
         PixelPatch {
+            layer_id: patch.layer_id,
             changed_indices: patch.changed_indices.clone(),
             before: patch.after.clone(),
             after: patch.before.clone(),
         }
     }
 
-    pub(crate) fn patch_from_changes(changes: &HashMap<u32, PixelChange>) -> Option<PixelPatch> {
+    pub(crate) fn patch_from_changes(&self, changes: &HashMap<u32, PixelChange>) -> Option<PixelPatch> {
         if changes.is_empty() {
             return None;
         }
@@ -25,6 +26,7 @@ impl Editor {
             after.extend_from_slice(&c.after);
         }
         Some(PixelPatch {
+            layer_id: self.active_layer().id,
             changed_indices,
             before,
             after,
@@ -33,9 +35,12 @@ impl Editor {
 
     pub(crate) fn apply_patch(&mut self, patch: &PixelPatch, undo: bool) {
         let src = if undo { &patch.before } else { &patch.after };
+        let Some(layer_bitmap) = self.bitmap_mut_for_layer_id(patch.layer_id) else {
+            return;
+        };
         for (n, idx) in patch.changed_indices.iter().enumerate() {
             let j = n * 4;
-            Self::set_rgba(&mut self.bitmap, *idx, [src[j], src[j + 1], src[j + 2], src[j + 3]]);
+            Self::set_rgba(layer_bitmap, *idx, [src[j], src[j + 1], src[j + 2], src[j + 3]]);
         }
     }
 
