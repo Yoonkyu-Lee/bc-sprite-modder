@@ -27,6 +27,9 @@ extracted_packs/
 mods/
 tbcml/
 
+# Reference repos (cloned, do not push)
+reference/pixcil/
+
 # Environment
 .env
 .env.*

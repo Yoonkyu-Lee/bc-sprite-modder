@@ -21,12 +21,10 @@ struct PointerSession {
     last_point: Option<Point>,
     action_changes: HashMap<u32, PixelChange>,
     select_start: Option<Point>,
-    selected_indices: HashSet<u32>,
     move_start: Option<Point>,
     move_drag_origin: Option<Point>,
     move_base_bitmap: Option<Vec<u8>>,
     move_selected_mask: Vec<u8>,
-    move_opaque_indices: Vec<u32>,
     move_selection_bounds: Option<Rect>,
     move_current_delta: Point,
 }
@@ -44,6 +42,7 @@ struct Editor {
     is_pointer_down: bool,
     undo_stack: Vec<PixelPatch>,
     redo_stack: Vec<PixelPatch>,
+    selected_indices: HashSet<u32>,
     pointer: PointerSession,
 }
 
@@ -70,6 +69,7 @@ impl Editor {
             is_pointer_down: false,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            selected_indices: HashSet::new(),
             pointer: PointerSession::default(),
         }
     }
@@ -309,6 +309,33 @@ impl Editor {
         })
     }
 
+    // selected_indices is the single source of truth for selected pixels.
+    // Rect is treated as a derived cache for UI overlays.
+    fn set_selected_indices(&mut self, indices: HashSet<u32>) {
+        self.selected_indices = indices;
+        self.selection.rect = Self::selection_bounds(&self.selected_indices, self.width);
+    }
+
+    fn selected_bounds(&self) -> Option<Rect> {
+        Self::selection_bounds(&self.selected_indices, self.width)
+    }
+
+    // Move cache: rebuilt once when move session starts, cleared when move session ends.
+    fn build_move_mask_from_selected_indices(&self) -> (Vec<u8>, bool) {
+        let mut mask = vec![0u8; (self.width * self.height) as usize];
+        let mut has_opaque = false;
+        for idx in &self.selected_indices {
+            if *idx >= self.width * self.height {
+                continue;
+            }
+            mask[*idx as usize] = 1;
+            if Self::rgba_at(&self.bitmap, *idx)[3] > 0 {
+                has_opaque = true;
+            }
+        }
+        (mask, has_opaque)
+    }
+
     fn handle_pointer_down(&mut self, input: &PointerInput) -> Option<PixelPatch> {
         let button = input.button.unwrap_or(0);
         let p = Point {
@@ -385,30 +412,22 @@ impl Editor {
             }
             ToolKind::Move => {
                 if self.pointer.move_base_bitmap.is_none() {
-                    if self.pointer.selected_indices.is_empty() {
+                    if self.selected_indices.is_empty() {
                         self.message = Some("MOVE: no active selection".into());
                         return None;
                     }
-                    let bounds = Self::selection_bounds(&self.pointer.selected_indices, self.width);
+                    let bounds = self.selected_bounds();
                     let Some(bounds) = bounds else {
                         self.message = Some("MOVE: no active selection".into());
                         return None;
                     };
-                    let mut selected_mask = vec![0u8; (self.width * self.height) as usize];
-                    let mut opaque_indices = Vec::new();
-                    for idx in &self.pointer.selected_indices {
-                        selected_mask[*idx as usize] = 1;
-                        if Self::rgba_at(&self.bitmap, *idx)[3] > 0 {
-                            opaque_indices.push(*idx);
-                        }
-                    }
-                    if opaque_indices.is_empty() {
+                    let (selected_mask, has_opaque) = self.build_move_mask_from_selected_indices();
+                    if !has_opaque {
                         self.message = Some("MOVE: no movable pixels".into());
                         return None;
                     }
                     self.pointer.move_base_bitmap = Some(self.bitmap.clone());
                     self.pointer.move_selected_mask = selected_mask;
-                    self.pointer.move_opaque_indices = opaque_indices;
                     self.pointer.move_selection_bounds = Some(bounds);
                     self.pointer.move_current_delta = Point { x: 0, y: 0 };
                     self.selection.move_delta = Point { x: 0, y: 0 };
@@ -525,27 +544,23 @@ impl Editor {
         self.selection.move_delta = Point { x: 0, y: 0 };
         self.selection.moving = false;
         if self.selection.mode == SelectionMode::Rect {
-            self.selection.rect = self.selection.draft_rect;
+            let rect = self.selection.draft_rect;
             self.selection.draft_rect = None;
             self.selection.lasso_points.clear();
             self.selection.draft_lasso_points.clear();
-            self.pointer.selected_indices = self
-                .selection
-                .rect
-                .map(|r| self.build_selection_indices_from_rect(r))
-                .unwrap_or_default();
+            let indices = rect.map(|r| self.build_selection_indices_from_rect(r)).unwrap_or_default();
+            self.set_selected_indices(indices);
         } else {
             self.selection.lasso_points = self.selection.draft_lasso_points.clone();
             self.selection.draft_lasso_points.clear();
-            self.pointer.selected_indices = self.build_selection_indices_from_lasso(&self.selection.lasso_points);
-            self.selection.rect = Self::selection_bounds(&self.pointer.selected_indices, self.width);
+            let indices = self.build_selection_indices_from_lasso(&self.selection.lasso_points);
+            self.set_selected_indices(indices);
             self.selection.draft_rect = None;
         }
     }
 
     fn clear_move_state(&mut self) {
-        self.pointer.selected_indices.clear();
-        self.selection.rect = None;
+        self.set_selected_indices(HashSet::new());
         self.selection.lasso_points.clear();
         self.selection.draft_rect = None;
         self.selection.draft_lasso_points.clear();
@@ -555,7 +570,6 @@ impl Editor {
         self.pointer.move_drag_origin = None;
         self.pointer.move_base_bitmap = None;
         self.pointer.move_selected_mask.clear();
-        self.pointer.move_opaque_indices.clear();
         self.pointer.move_selection_bounds = None;
         self.pointer.move_current_delta = Point { x: 0, y: 0 };
     }
@@ -807,7 +821,7 @@ impl Editor {
         };
         Ok(MovePreviewData {
             bounds,
-            selected_indices: self.pointer.selected_indices.iter().copied().collect(),
+            selected_indices: self.selected_indices.iter().copied().collect(),
         })
     }
 }
