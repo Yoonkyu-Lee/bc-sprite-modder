@@ -16,11 +16,7 @@ import { useCanvasSessionQueue } from "../features/canvas-editor/hooks/useCanvas
 import { usePaletteController } from "../features/canvas-editor/hooks/usePaletteController";
 import { useCanvasInputController } from "../features/canvas-editor/hooks/useCanvasInputController";
 import { useCanvasActions } from "../features/canvas-editor/hooks/useCanvasActions";
-import {
-  createSession,
-  decodeRgbaBase64,
-  getSnapshot,
-} from "../features/canvas-editor/backend";
+import { useCanvasRenderBridge } from "../features/canvas-editor/hooks/useCanvasRenderBridge";
 import type { EditorStatus, Point } from "../features/canvas-editor/types";
 
 export function CanvasPanel(_props: IDockviewPanelProps) {
@@ -66,59 +62,24 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
     bumpRevision,
   });
 
-  useEffect(() => {
-    let cancelled = false;
-    enqueue(async () => {
-      const sessionId = sessionIdRef.current;
-      const created = await createSession(sessionId, CANVAS_SIZE, CANVAS_SIZE);
-      const snapshot = await getSnapshot(sessionId);
-      if (cancelled) return;
-      setStatus(created);
-      setBitmap(decodeRgbaBase64(snapshot.rgbaBase64));
-      setBitmapVersion((v) => v + 1);
-      setMovePreview(null);
-      setRevision((v) => v + 1);
-      setLoadError(null);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [enqueue]);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    const renderer = rendererRef.current;
-    if (!canvas || !renderer || !bitmap) return;
-    const renderBitmap = movePreview?.baseBitmap ?? bitmap;
-    const renderBitmapVersion = movePreview?.baseBitmapVersion ?? bitmapVersion;
-    renderer.render(canvas, {
-      bitmap: renderBitmap,
-      bitmapVersion: renderBitmapVersion,
-      imageWidth: CANVAS_SIZE,
-      imageHeight: CANVAS_SIZE,
-      tool: status.tool,
-      hoverPixel,
-      view: {
-        viewportWidth: Math.max(1, canvas.clientWidth),
-        viewportHeight: Math.max(1, canvas.clientHeight),
-        imageWidth: CANVAS_SIZE,
-        imageHeight: CANVAS_SIZE,
-        zoom: status.zoom,
-        panX: status.pan.x,
-        panY: status.pan.y,
-      },
-      selection: status.selection,
-      movePreview,
-    });
-  }, [bitmap, bitmapVersion, status, hoverPixel, movePreview, revision]);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ro = new ResizeObserver(() => setRevision((v) => v + 1));
-    ro.observe(canvas);
-    return () => ro.disconnect();
-  }, []);
+  useCanvasRenderBridge({
+    canvasRef,
+    rendererRef,
+    sessionIdRef,
+    enqueue,
+    setLoadError,
+    status,
+    bitmap,
+    bitmapVersion,
+    movePreview,
+    hoverPixel,
+    revision,
+    setStatus,
+    setBitmap,
+    setBitmapVersion,
+    setMovePreview,
+    setRevision,
+  });
 
   useEffect(() => {
     setLayerNameDrafts((prev) => {

@@ -1,7 +1,7 @@
 ﻿# Canvas Editor Status
 
-Last updated: 2026-03-06  
-Scope: current local workspace state after layer-stack introduction and move-preview z-order fixes.
+Last updated: 2026-03-11  
+Scope: current local workspace state after frontend modularization pass (hooks/components/css split).
 
 ## 1. Current Scope
 
@@ -26,19 +26,36 @@ Not implemented (or still basic):
 - File: `src/panels/CanvasPanel.tsx`  
 - Responsibility: pointer/keyboard input, toolbar/status/layer UI, backend RPC calls, render inputs
 
-2. Frontend backend adapter  
+2. Frontend orchestration hooks  
+- Files:
+  - `src/features/canvas-editor/hooks/useCanvasSessionQueue.ts`
+  - `src/features/canvas-editor/hooks/useCanvasRenderBridge.ts`
+  - `src/features/canvas-editor/hooks/useCanvasInputController.ts`
+  - `src/features/canvas-editor/hooks/useCanvasActions.ts`
+  - `src/features/canvas-editor/hooks/usePaletteController.ts`
+- Responsibility: session queue, render bridge, input state machine, action layer, palette state/IO
+
+3. Frontend presentational components  
+- Files:
+  - `src/features/canvas-editor/components/CanvasToolbar.tsx`
+  - `src/features/canvas-editor/components/PalettePopover.tsx`
+  - `src/features/canvas-editor/components/LayersPanel.tsx`
+  - `src/features/canvas-editor/components/CanvasStatusBar.tsx`
+- Responsibility: stateless UI for toolbar/palette/layers/status
+
+4. Frontend backend adapter  
 - File: `src/features/canvas-editor/backend.ts`  
 - Responsibility: Tauri invoke wrappers, patch apply helper, snapshot/move-preview decode
 
-3. Frontend renderer (GPU)  
+5. Frontend renderer (GPU)  
 - File: `src/features/canvas-editor/render.ts`  
 - Responsibility: WebGL2 rendering (composited base or move underlay, floating block, overlay, guides)
 
-4. Tauri command layer  
+6. Tauri command layer  
 - File: `src-tauri/src/commands/canvas_editor.rs`  
 - Responsibility: command arg deserialize + forward to canvas core API
 
-5. Rust canvas core  
+7. Rust canvas core  
 - Directory: `src-tauri/src/canvas_editor/`  
 - Responsibility: state, tools, history, session store, API boundary
 
@@ -56,6 +73,23 @@ Not implemented (or still basic):
 - `tools_move.rs`: move mask/preview/commit/cancel
 - `tools.rs`: common algorithms (bresenham, flood fill, rect helpers)
 - `types.rs`: shared RPC/status payload types
+
+### 2.3 Frontend module map
+
+- `src/panels/CanvasPanel.tsx`: thin composition shell (wiring hooks + UI components)
+- Hooks:
+  - `useCanvasSessionQueue.ts`: serialized async queue + session id + error state
+  - `useCanvasRenderBridge.ts`: session bootstrap, GPU render effect, resize observer
+  - `useCanvasInputController.ts`: pointer/keyboard/wheel handlers, zoom tool state, tool switching
+  - `useCanvasActions.ts`: undo/redo + layer CRUD/rename/reorder + snapshot refresh policy
+  - `usePaletteController.ts`: HSV/HEX/RGBA palette state, drag interactions, backend color sync
+- UI components:
+  - `CanvasToolbar.tsx`, `PalettePopover.tsx`, `LayersPanel.tsx`, `CanvasStatusBar.tsx`
+- Panel utilities:
+  - `panel/color.ts`, `panel/status.ts`, `panel/movePreview.ts`
+- Styles:
+  - global app styles: `src/styles.css`
+  - canvas-only styles: `src/styles/canvas-editor/layout.css`
 
 ## 3. Layer Design (Current)
 
@@ -204,7 +238,8 @@ Properties:
 ## 7. Known Risks / Technical Debt
 
 - Rust/TS contract synchronization is manual.
-- Move preview currently sends full-size RGBA underlay/overlay on session start; can be optimized with regions/texture caching later.
+- Move preview currently sends full-size RGBA underlay/overlay on session start (high initial latency risk).
+- `useCanvasSessionQueue` is single-queue serialized; heavy move-preview initialization can still cause pointer input lag.
 - Core state-machine paths still lack automated tests.
 - High-frequency input paths need periodic perf checks.
 
@@ -245,3 +280,95 @@ Frontend:
 - `src/features/canvas-editor/backend.ts`
 - `src/features/canvas-editor/render.ts`
 - `src/features/canvas-editor/types.ts`
+- `src/features/canvas-editor/hooks/useCanvasSessionQueue.ts`
+- `src/features/canvas-editor/hooks/useCanvasRenderBridge.ts`
+- `src/features/canvas-editor/hooks/useCanvasInputController.ts`
+- `src/features/canvas-editor/hooks/useCanvasActions.ts`
+- `src/features/canvas-editor/hooks/usePaletteController.ts`
+- `src/features/canvas-editor/components/CanvasToolbar.tsx`
+- `src/features/canvas-editor/components/PalettePopover.tsx`
+- `src/features/canvas-editor/components/LayersPanel.tsx`
+- `src/features/canvas-editor/components/CanvasStatusBar.tsx`
+- `src/features/canvas-editor/panel/color.ts`
+- `src/features/canvas-editor/panel/status.ts`
+- `src/features/canvas-editor/panel/movePreview.ts`
+- `src/styles/canvas-editor/layout.css`
+
+## 10. Frontend Modularization Progress
+
+### 10.1 Completed
+
+- `CanvasPanel.tsx` was reduced to composition/wiring role.
+- Input logic is isolated in `useCanvasInputController`.
+- Async command ordering/session lifecycle is isolated in `useCanvasSessionQueue`.
+- Snapshot/render bootstrap pipeline is isolated in `useCanvasRenderBridge`.
+- Toolbar/layer/palette/status UI is componentized.
+- Palette conversion/validation logic moved to `panel/color.ts` + `usePaletteController`.
+- Move preview decode/validation helper isolated in `panel/movePreview.ts`.
+
+### 10.2 Still Coupled (needs next split)
+
+- Some cross-cutting refs/state are still owned in `CanvasPanel.tsx`:
+  - `layerNameDrafts`
+  - move preview local coordination
+  - some status/bridge glue callbacks
+- Hook boundaries are good, but still callback-heavy; type-safe action context can reduce prop drilling.
+- CSS is split, but still in a single `layout.css`; toolbar/layers/palette/status partial files are not separated yet.
+
+## 11. Refactor Targets for Visual Overhaul
+
+If doing major frontend visual redesign (dock relocation, floating mode, icon-only toolbar), edit priority:
+
+1. Layout container contract first  
+- `CanvasPanel.tsx`
+- `src/styles/canvas-editor/layout.css`
+- Define panel slots explicitly: `topbar`, `left-tools`, `center-stage`, `right-layers`, `bottom-status`.
+
+2. Toolbar representation model  
+- `CanvasToolbar.tsx`
+- Replace text labels with icon metadata map (`tool id -> icon, label, shortcut, tooltip`).
+
+3. Layers panel interaction model  
+- `LayersPanel.tsx`
+- Keep current action handlers stable; swap rendering/styling first before behavior edits.
+
+4. Palette UX overhaul  
+- `PalettePopover.tsx`, `panel/color.ts`, `usePaletteController.ts`
+- Introduce popover layout variants without touching backend payload contract.
+
+5. Render overlay UI alignment  
+- `render.ts` + status marker CSS
+- Ensure marker/selection visuals still align after container and DPR/layout changes.
+
+## 12. Phase Plan for Next Features
+
+### Phase A: Layer UX hardening (frontend only)
+- Improve layer row hit zones and drag affordance.
+- Add explicit active-layer badge and disabled styles for hidden layers.
+- Add command feedback in status bar for reorder/create/delete failures.
+
+### Phase B: Clipboard foundation
+- Add frontend clipboard service module:
+  - `readImageFromClipboard()`
+  - `writeSelectionToClipboard()`
+- Keep backend contract unchanged first; validate browser/Tauri permission behavior.
+- Add status error taxonomy (permission denied / unsupported / empty clipboard).
+
+### Phase C: Clipboard + floating integration
+- On paste: create floating session, switch to move tool, keep commit/cancel semantics identical to selection move.
+- On copy: export current selection bounding image with transparent outside.
+- Add regression matrix for copy/paste interop with external apps.
+
+## 13. Stability Checklist Before Large Changes
+
+- Verify move preview correctness in all active-layer positions (top/middle/bottom).
+- Verify tool-switch commit paths:
+  - click outside selection
+  - switch tool
+  - `Enter` commit
+- Verify undo/redo invariants after:
+  - draw with alpha
+  - fill with alpha
+  - move selection commit
+  - layer reorder + edit + undo
+- Verify no viewport shortcut collision while canvas panel is focused.

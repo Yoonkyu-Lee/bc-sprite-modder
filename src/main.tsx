@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./styles.css";
+import "./styles/canvas-editor/layout.css";
 
 const t0 = performance.now();
 console.log("[init] main.tsx: 엔트리 로드", new Date().toISOString());
