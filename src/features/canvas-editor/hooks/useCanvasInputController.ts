@@ -72,6 +72,9 @@ export function useCanvasInputController(params: Params) {
   const moveRafRef = useRef<number | null>(null);
   const pendingViewRef = useRef<{ zoom: number; pan: Point } | null>(null);
   const viewRafRef = useRef<number | null>(null);
+  // Pre-fetched move preview: populated in background right after selection commit
+  // so the first drag can skip the expensive IPC round-trip.
+  const prefetchedMovePreviewRef = useRef<MovePreviewState | null>(null);
 
   const isZoomToolActive = zoomToolLatched || zoomToolHeld;
 
@@ -176,6 +179,8 @@ export function useCanvasInputController(params: Params) {
       const point = toPixel(event);
       if (!bitmap) return;
       event.currentTarget.setPointerCapture(event.pointerId);
+      // Capture at event time to avoid stale closure inside enqueue.
+      const hadMovePreview = movePreview != null;
       enqueue(async () => {
         const result = await dispatchPointer(sessionIdRef.current, {
           kind: "down",
@@ -189,17 +194,33 @@ export function useCanvasInputController(params: Params) {
         }
         setStatus(result.status);
         if (result.status.tool === "move" && result.status.selection.moving) {
-          const previewData = await getMovePreviewData(sessionIdRef.current);
-          const preview = buildMovePreview(
-            CANVAS_SIZE,
-            previewData.bounds,
-            previewData.selectedIndices,
-            decodeRgbaBase64(previewData.selectedBlockRgbaBase64),
-            decodeRgbaBase64(previewData.underlayRgbaBase64),
-            decodeRgbaBase64(previewData.overlayRgbaBase64)
-          );
-          preview.delta = result.status.selection.moveDelta;
-          setMovePreview(preview);
+          if (hadMovePreview) {
+            // Preview data (underlay/overlay/mask) is unchanged between drags
+            // on the same floating selection — only delta needs updating.
+            setMovePreview((prev) =>
+              prev ? { ...prev, delta: result.status.selection.moveDelta } : null
+            );
+          } else {
+            // First drag on this selection.
+            // Use pre-fetched data if it arrived in background; otherwise fetch now.
+            const prefetched = prefetchedMovePreviewRef.current;
+            prefetchedMovePreviewRef.current = null;
+            if (prefetched) {
+              setMovePreview({ ...prefetched, delta: result.status.selection.moveDelta });
+            } else {
+              const previewData = await getMovePreviewData(sessionIdRef.current);
+              const preview = buildMovePreview(
+                CANVAS_SIZE,
+                previewData.bounds,
+                previewData.selectedIndices,
+                decodeRgbaBase64(previewData.selectedBlockRgbaBase64),
+                decodeRgbaBase64(previewData.underlayRgbaBase64),
+                decodeRgbaBase64(previewData.overlayRgbaBase64)
+              );
+              preview.delta = result.status.selection.moveDelta;
+              setMovePreview(preview);
+            }
+          }
         } else {
           setMovePreview(null);
         }
@@ -215,6 +236,7 @@ export function useCanvasInputController(params: Params) {
       status.pan.y,
       toPixel,
       bitmap,
+      movePreview,
       enqueue,
       sessionIdRef,
       setStatus,
@@ -347,6 +369,26 @@ export function useCanvasInputController(params: Params) {
             delta: result.status.selection.moveDelta,
           };
         });
+        // Selection was just committed: pre-fetch move preview data in the background
+        // so the first drag can start without waiting for the IPC round-trip.
+        if (result.status.tool === "select" && result.status.selection.rect != null) {
+          prefetchedMovePreviewRef.current = null;
+          const sessionId = sessionIdRef.current;
+          getMovePreviewData(sessionId)
+            .then((previewData) => {
+              prefetchedMovePreviewRef.current = buildMovePreview(
+                CANVAS_SIZE,
+                previewData.bounds,
+                previewData.selectedIndices,
+                decodeRgbaBase64(previewData.selectedBlockRgbaBase64),
+                decodeRgbaBase64(previewData.underlayRgbaBase64),
+                decodeRgbaBase64(previewData.overlayRgbaBase64)
+              );
+            })
+            .catch(() => {
+              prefetchedMovePreviewRef.current = null;
+            });
+        }
         setRevision((v) => v + 1);
       });
     },

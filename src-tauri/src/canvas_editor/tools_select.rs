@@ -78,5 +78,7 @@ impl Editor {
             self.set_selected_indices_sot(indices);
             self.selection.draft_rect = None;
         }
+        // Pre-compute move preview cache so the first drag starts immediately.
+        self.build_move_preview_cache();
     }
 }

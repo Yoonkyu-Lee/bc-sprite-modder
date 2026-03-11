@@ -2,7 +2,7 @@ use base64::Engine;
 use std::collections::HashSet;
 
 use super::session_store::{create_editor_session, with_editor_mut};
-use super::state::Editor;
+use super::state::{Editor, MovePreviewCache};
 use super::types::{
     EditorEventResult, EditorStatus, MovePreviewData, Point, PointerInput, SelectionMode, ShortcutInput,
     SnapshotResult, ToolKind,
@@ -18,17 +18,23 @@ impl Editor {
         }
     }
 
-    fn move_preview_data(&self) -> Result<MovePreviewData, String> {
-        let Some(bounds) = self.pointer.move_selection_bounds else {
-            return Err("move session is not active".to_string());
+    // Compute and store the move preview cache from current selection + layer state.
+    // Call this after commit_select(), and as a fallback at move session start.
+    pub(crate) fn build_move_preview_cache(&mut self) {
+        let Some(bounds) = self.selected_bounds() else {
+            self.move_preview_cache = None;
+            return;
         };
-        let selected_indices: Vec<u32> = self.selected_indices.iter().copied().collect();
-        let selected_set: HashSet<u32> = selected_indices.iter().copied().collect();
+        let selected_indices_vec: Vec<u32> = self.selected_indices.iter().copied().collect();
+        let selected_set: HashSet<u32> = selected_indices_vec.iter().copied().collect();
         let pixel_count = self.width * self.height;
+        let active_id = self.active_layer().id;
+        let active_layer_index = self.active_layer_index;
+
         let bw = bounds.width.max(1) as usize;
         let bh = bounds.height.max(1) as usize;
-        let mut block = vec![0u8; bw * bh * 4];
-        for idx in &selected_indices {
+        let mut selected_block = vec![0u8; bw * bh * 4];
+        for idx in &selected_indices_vec {
             let x = (*idx % self.width) as i32;
             let y = (*idx / self.width) as i32;
             let lx = x - bounds.x;
@@ -38,43 +44,15 @@ impl Editor {
             }
             let src = Editor::rgba_at(self.active_bitmap(), *idx);
             let dst_i = ((ly as usize * bw) + lx as usize) * 4;
-            block[dst_i] = src[0];
-            block[dst_i + 1] = src[1];
-            block[dst_i + 2] = src[2];
-            block[dst_i + 3] = src[3];
+            selected_block[dst_i] = src[0];
+            selected_block[dst_i + 1] = src[1];
+            selected_block[dst_i + 2] = src[2];
+            selected_block[dst_i + 3] = src[3];
         }
-        let mut under = vec![0u8; selected_indices.len() * 4];
-        let active_id = self.active_layer().id;
-        for (n, idx) in selected_indices.iter().enumerate() {
-            let mut composed = [0u8, 0u8, 0u8, 0u8];
-            for layer in &self.layers {
-                if !layer.visible || layer.opacity == 0 {
-                    continue;
-                }
-                if layer.id == active_id && selected_set.contains(idx) {
-                    continue;
-                }
-                let src_raw = Editor::rgba_at(&layer.bitmap, *idx);
-                if src_raw[3] == 0 {
-                    continue;
-                }
-                let src = [
-                    src_raw[0],
-                    src_raw[1],
-                    src_raw[2],
-                    ((src_raw[3] as u16 * layer.opacity as u16) / 255) as u8,
-                ];
-                composed = Editor::alpha_blend(src, composed);
-            }
-            let j = n * 4;
-            under[j] = composed[0];
-            under[j + 1] = composed[1];
-            under[j + 2] = composed[2];
-            under[j + 3] = composed[3];
-        }
+
         let mut underlay = vec![0u8; (pixel_count * 4) as usize];
         for (layer_index, layer) in self.layers.iter().enumerate() {
-            if layer_index > self.active_layer_index || !layer.visible || layer.opacity == 0 {
+            if layer_index > active_layer_index || !layer.visible || layer.opacity == 0 {
                 continue;
             }
             for idx in 0..pixel_count {
@@ -92,13 +70,13 @@ impl Editor {
                     ((src_raw[3] as u16 * layer.opacity as u16) / 255) as u8,
                 ];
                 let dst = Editor::rgba_at(&underlay, idx);
-                let blended = Editor::alpha_blend(src, dst);
-                Editor::set_rgba(&mut underlay, idx, blended);
+                Editor::set_rgba(&mut underlay, idx, Editor::alpha_blend(src, dst));
             }
         }
+
         let mut overlay = vec![0u8; (pixel_count * 4) as usize];
         for (layer_index, layer) in self.layers.iter().enumerate() {
-            if layer_index <= self.active_layer_index || !layer.visible || layer.opacity == 0 {
+            if layer_index <= active_layer_index || !layer.visible || layer.opacity == 0 {
                 continue;
             }
             for idx in 0..pixel_count {
@@ -113,17 +91,34 @@ impl Editor {
                     ((src_raw[3] as u16 * layer.opacity as u16) / 255) as u8,
                 ];
                 let dst = Editor::rgba_at(&overlay, idx);
-                let blended = Editor::alpha_blend(src, dst);
-                Editor::set_rgba(&mut overlay, idx, blended);
+                Editor::set_rgba(&mut overlay, idx, Editor::alpha_blend(src, dst));
             }
         }
+
+        self.move_preview_cache = Some(MovePreviewCache {
+            selected_indices_vec,
+            selected_block,
+            underlay,
+            overlay,
+        });
+    }
+
+    // Reads move preview data from cache. Cache must be built before calling this.
+    // Can be called before the move session starts (e.g., for pre-fetching),
+    // in which case bounds are derived from the current selection.
+    fn move_preview_data(&self) -> Result<MovePreviewData, String> {
+        let bounds = self.pointer.move_selection_bounds
+            .or_else(|| self.selected_bounds())
+            .ok_or_else(|| "no active selection".to_string())?;
+        let cache = self.move_preview_cache.as_ref()
+            .ok_or_else(|| "move preview cache not ready".to_string())?;
         Ok(MovePreviewData {
             bounds,
-            selected_indices,
-            selected_block_rgba_base64: base64::engine::general_purpose::STANDARD.encode(block),
-            under_selection_rgba_base64: base64::engine::general_purpose::STANDARD.encode(under),
-            underlay_rgba_base64: base64::engine::general_purpose::STANDARD.encode(underlay),
-            overlay_rgba_base64: base64::engine::general_purpose::STANDARD.encode(overlay),
+            selected_indices: cache.selected_indices_vec.clone(),
+            selected_block_rgba_base64: base64::engine::general_purpose::STANDARD.encode(&cache.selected_block),
+            under_selection_rgba_base64: String::new(),
+            underlay_rgba_base64: base64::engine::general_purpose::STANDARD.encode(&cache.underlay),
+            overlay_rgba_base64: base64::engine::general_purpose::STANDARD.encode(&cache.overlay),
         })
     }
 }

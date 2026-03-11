@@ -64,6 +64,7 @@ impl Editor {
             self.redo_stack.push(pch.clone());
             applied_patch = Some(Self::reversed_patch(pch));
             self.message = Some("UNDO".into());
+            self.move_preview_cache = None;
         }
         EditorEventResult {
             status: self.status(),
@@ -81,6 +82,7 @@ impl Editor {
             self.apply_patch(pch, false);
             self.undo_stack.push(pch.clone());
             self.message = Some("REDO".into());
+            self.move_preview_cache = None;
         }
         EditorEventResult {
             status: self.status(),

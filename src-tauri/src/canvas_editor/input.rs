@@ -21,11 +21,13 @@ impl Editor {
         match self.tool {
             ToolKind::Draw => {
                 self.pointer.action_changes.clear();
+                self.move_preview_cache = None;
                 self.message = Some("DRAW".into());
                 self.draw_segment_blended(p, p, self.active_rgba())
             }
             ToolKind::Erase => {
                 self.pointer.action_changes.clear();
+                self.move_preview_cache = None;
                 self.message = Some("ERASE".into());
                 self.draw_segment_solid(p, p, [0, 0, 0, 0])
             }
@@ -47,6 +49,7 @@ impl Editor {
                     return None;
                 }
                 self.pointer.action_changes.clear();
+                self.move_preview_cache = None;
                 let idx = self.idx(p);
                 let target = Self::rgba_at(self.active_bitmap(), idx);
                 let source = self.active_rgba();
@@ -102,6 +105,11 @@ impl Editor {
                     if !self.rebuild_move_selection_cache() {
                         self.message = Some("MOVE: no movable pixels".into());
                         return None;
+                    }
+                    // Ensure cache is ready. Normally built at commit_select,
+                    // but rebuild here if the bitmap was modified since then.
+                    if self.move_preview_cache.is_none() {
+                        self.build_move_preview_cache();
                     }
                     self.pointer.move_selection_bounds = Some(bounds);
                     self.pointer.move_base_bitmap = Some(self.active_bitmap().to_vec());

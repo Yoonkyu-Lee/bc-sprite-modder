@@ -8,6 +8,13 @@ pub(crate) struct PixelChange {
     pub(crate) after: [u8; 4],
 }
 
+pub(crate) struct MovePreviewCache {
+    pub(crate) selected_indices_vec: Vec<u32>,
+    pub(crate) selected_block: Vec<u8>,
+    pub(crate) underlay: Vec<u8>,
+    pub(crate) overlay: Vec<u8>,
+}
+
 #[derive(Default)]
 pub(crate) struct PointerSession {
     pub(crate) last_point: Option<Point>,
@@ -39,6 +46,7 @@ pub(crate) struct Editor {
     pub(crate) selected_indices: HashSet<u32>,
     pub(crate) pointer: PointerSession,
     pub(crate) next_layer_id: u32,
+    pub(crate) move_preview_cache: Option<MovePreviewCache>,
 }
 
 pub(crate) struct Layer {
@@ -84,6 +92,7 @@ impl Editor {
             selected_indices: HashSet::new(),
             pointer: PointerSession::default(),
             next_layer_id: 2,
+            move_preview_cache: None,
         }
     }
 
@@ -295,6 +304,7 @@ impl Editor {
         self.selection.rect = None;
         self.pointer.move_selected_mask.clear();
         self.pointer.move_selection_bounds = None;
+        self.move_preview_cache = None;
     }
 
     pub(crate) fn clear_selection_visual_state(&mut self) {
@@ -374,6 +384,7 @@ impl Editor {
             return Err(format!("layer not found: {layer_id}"));
         };
         self.layers[idx].opacity = opacity;
+        self.move_preview_cache = None;
         Ok(())
     }
 
@@ -382,6 +393,7 @@ impl Editor {
             return Err(format!("layer not found: {layer_id}"));
         };
         self.layers[idx].visible = !self.layers[idx].visible;
+        self.move_preview_cache = None;
         Ok(())
     }
 
@@ -410,6 +422,7 @@ impl Editor {
         self.active_layer_index = self
             .layer_index_by_id(active_id)
             .ok_or("active layer missing after reorder".to_string())?;
+        self.move_preview_cache = None;
         Ok(())
     }
 }
