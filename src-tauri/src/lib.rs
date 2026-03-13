@@ -1,5 +1,4 @@
 mod commands;
-mod canvas_editor;
 mod viewport;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -26,27 +25,6 @@ pub fn run() {
             commands::sprite::extract_viewport_assets,
             commands::sprite::get_viewport_meta,
             commands::sprite::get_viewport_playback_data,
-            commands::canvas_editor::canvas_editor_create_session,
-            commands::canvas_editor::canvas_editor_get_status,
-            commands::canvas_editor::canvas_editor_get_snapshot,
-            commands::canvas_editor::canvas_editor_get_move_preview_data,
-            commands::canvas_editor::canvas_editor_get_layer_composites,
-            commands::canvas_editor::canvas_editor_dispatch_pointer,
-            commands::canvas_editor::canvas_editor_dispatch_shortcut,
-            commands::canvas_editor::canvas_editor_set_tool,
-            commands::canvas_editor::canvas_editor_set_selection_mode,
-            commands::canvas_editor::canvas_editor_set_active_color,
-            commands::canvas_editor::canvas_editor_set_active_alpha,
-            commands::canvas_editor::canvas_editor_set_view,
-            commands::canvas_editor::canvas_editor_undo,
-            commands::canvas_editor::canvas_editor_redo,
-            commands::canvas_editor::canvas_editor_create_layer_above_active,
-            commands::canvas_editor::canvas_editor_delete_layer,
-            commands::canvas_editor::canvas_editor_set_active_layer,
-            commands::canvas_editor::canvas_editor_rename_layer,
-            commands::canvas_editor::canvas_editor_set_layer_opacity,
-            commands::canvas_editor::canvas_editor_toggle_layer_visibility,
-            commands::canvas_editor::canvas_editor_reorder_layers,
         ])
         .setup(|_app| {
             eprintln!("[init] Tauri setup (윈도우 생성 직전)");

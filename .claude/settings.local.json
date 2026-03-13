@@ -6,7 +6,14 @@
       "Bash(npx vite:*)",
       "Bash(cargo build:*)",
       "Read(//c/Users/yoong/.claude/projects/c--Users-yoong-Desktop-Library-Personal-Project-the-battle-cats-sprite-modder/**)",
-      "Bash(ls \"C:\\\\Users\\\\yoong\\\\.claude\\\\projects\\\\c--Users-yoong-Desktop-Library-Personal-Project-the-battle-cats-sprite-modder\\\\memory\"\" 2>/dev/null || echo \"Directory does not exist \")"
+      "Bash(ls \"C:\\\\Users\\\\yoong\\\\.claude\\\\projects\\\\c--Users-yoong-Desktop-Library-Personal-Project-the-battle-cats-sprite-modder\\\\memory\"\" 2>/dev/null || echo \"Directory does not exist \")",
+      "Bash(wasm-pack --version)",
+      "Bash(rustup target:*)",
+      "Bash(cargo install:*)",
+      "Bash(npm install:*)",
+      "Bash(for f:*)",
+      "Bash(do sed:*)",
+      "Bash(done)"
     ]
   }
 }

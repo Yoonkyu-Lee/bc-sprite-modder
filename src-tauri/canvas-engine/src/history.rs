@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use super::state::{Editor, PixelChange};
-use super::types::{EditorEventResult, PixelPatch};
+use crate::state::{Editor, PixelChange};
+use crate::types::{EditorEventResult, PixelPatch};
 
 impl Editor {
     fn reversed_patch(patch: &PixelPatch) -> PixelPatch {

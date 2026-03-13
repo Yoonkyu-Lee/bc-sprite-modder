@@ -12,7 +12,7 @@ import { CanvasToolbar } from "../features/canvas-editor/components/CanvasToolba
 import { LayersPanel } from "../features/canvas-editor/components/LayersPanel";
 import type { MovePreviewState } from "../features/canvas-editor/panel/movePreview";
 import { CANVAS_SIZE, fallbackStatus } from "../features/canvas-editor/panel/status";
-import { useCanvasSessionQueue } from "../features/canvas-editor/hooks/useCanvasSessionQueue";
+import type { CanvasEditor } from "../features/canvas-editor/engine";
 import { usePaletteController } from "../features/canvas-editor/hooks/usePaletteController";
 import { useCanvasInputController } from "../features/canvas-editor/hooks/useCanvasInputController";
 import { useCanvasActions } from "../features/canvas-editor/hooks/useCanvasActions";
@@ -23,7 +23,9 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<CanvasRenderer | null>(null);
-  const { sessionIdRef, loadError, setLoadError, enqueue } = useCanvasSessionQueue();
+  const editorRef = useRef<CanvasEditor | null>(null);
+
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [status, setStatus] = useState<EditorStatus>(fallbackStatus());
   const [bitmap, setBitmap] = useState<Uint8ClampedArray | null>(null);
   const [bitmapVersion, setBitmapVersion] = useState(0);
@@ -56,8 +58,7 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
     onAlphaChange,
   } = usePaletteController({
     status,
-    sessionIdRef,
-    enqueue,
+    editorRef,
     setStatus,
     bumpRevision,
   });
@@ -65,8 +66,7 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
   useCanvasRenderBridge({
     canvasRef,
     rendererRef,
-    sessionIdRef,
-    enqueue,
+    editorRef,
     setLoadError,
     status,
     bitmap,
@@ -109,11 +109,9 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
     handleKeyUp,
     selectTool,
     selectSelectionMode,
-    prefetchDrawComposites,
   } = useCanvasInputController({
     canvasRef,
-    sessionIdRef,
-    enqueue,
+    editorRef,
     status,
     bitmap,
     movePreview,
@@ -137,10 +135,8 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
     commitLayerName,
     onDropLayer,
   } = useCanvasActions({
-    sessionIdRef,
-    enqueue,
+    editorRef,
     status,
-    bitmap,
     dragLayerId,
     layerNameDrafts,
     setStatus,
@@ -150,7 +146,6 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
     setRevision,
     setDragLayerId,
     setLayerNameDrafts,
-    prefetchDrawComposites,
   });
 
   const statusLine = useMemo(() => {

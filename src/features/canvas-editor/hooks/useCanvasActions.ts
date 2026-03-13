@@ -1,26 +1,11 @@
 import { useCallback, type Dispatch, type SetStateAction } from "react";
-import {
-  applyPatch,
-  createLayerAboveActive,
-  decodeRgbaBase64,
-  deleteLayer,
-  getSnapshot,
-  redo,
-  renameLayer,
-  reorderLayers,
-  setActiveLayer,
-  setLayerOpacity,
-  toggleLayerVisibility,
-  undo,
-} from "../backend";
-import type { EditorStatus, LayerStatus } from "../types";
+import { CanvasEditor } from "../engine";
+import type { EditorEventResult, EditorStatus, LayerStatus } from "../types";
 import type { MovePreviewState } from "../panel/movePreview";
 
 type Params = {
-  sessionIdRef: { current: string };
-  enqueue: (task: () => Promise<void>) => void;
+  editorRef: { current: CanvasEditor | null };
   status: EditorStatus;
-  bitmap: Uint8ClampedArray | null;
   dragLayerId: number | null;
   layerNameDrafts: Record<number, string>;
   setStatus: Dispatch<SetStateAction<EditorStatus>>;
@@ -30,15 +15,12 @@ type Params = {
   setRevision: Dispatch<SetStateAction<number>>;
   setDragLayerId: Dispatch<SetStateAction<number | null>>;
   setLayerNameDrafts: Dispatch<SetStateAction<Record<number, string>>>;
-  prefetchDrawComposites: (knownStatus?: Pick<EditorStatus, "activeLayerId" | "layers">) => void;
 };
 
 export function useCanvasActions(params: Params) {
   const {
-    sessionIdRef,
-    enqueue,
+    editorRef,
     status,
-    bitmap,
     dragLayerId,
     layerNameDrafts,
     setStatus,
@@ -48,101 +30,98 @@ export function useCanvasActions(params: Params) {
     setRevision,
     setDragLayerId,
     setLayerNameDrafts,
-    prefetchDrawComposites,
   } = params;
 
-  const applyStatusWithSnapshot = useCallback(
-    async (next: EditorStatus, refreshBitmap: boolean) => {
-      setStatus(next);
-      if (refreshBitmap) {
-        const snapshot = await getSnapshot(sessionIdRef.current);
-        setBitmap(decodeRgbaBase64(snapshot.rgbaBase64));
-        setBitmapVersion((v) => v + 1);
-      }
+  const refreshBitmap = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    setBitmap(new Uint8ClampedArray(editor.get_composite_bitmap()));
+    setBitmapVersion((v) => v + 1);
+  }, [editorRef, setBitmap, setBitmapVersion]);
+
+  const applyEventResult = useCallback(
+    (result: EditorEventResult) => {
+      setStatus(result.status);
+      if (result.patch) refreshBitmap();
       setMovePreview(null);
       setRevision((v) => v + 1);
     },
-    [sessionIdRef, setStatus, setBitmap, setBitmapVersion, setMovePreview, setRevision]
+    [setStatus, refreshBitmap, setMovePreview, setRevision]
   );
 
   const onUndo = useCallback(() => {
-    if (!bitmap) return;
-    enqueue(async () => {
-      const result = await undo(sessionIdRef.current);
-      applyPatch(bitmap, result.patch);
-      if (result.patch) {
-        setBitmapVersion((v) => v + 1);
-      }
-      setMovePreview(null);
-      setStatus(result.status);
-      setRevision((v) => v + 1);
-    });
-  }, [bitmap, enqueue, sessionIdRef, setBitmapVersion, setMovePreview, setStatus, setRevision]);
+    const editor = editorRef.current;
+    if (!editor) return;
+    const result = editor.undo() as EditorEventResult;
+    applyEventResult(result);
+  }, [editorRef, applyEventResult]);
 
   const onRedo = useCallback(() => {
-    if (!bitmap) return;
-    enqueue(async () => {
-      const result = await redo(sessionIdRef.current);
-      applyPatch(bitmap, result.patch);
-      if (result.patch) {
-        setBitmapVersion((v) => v + 1);
-      }
-      setMovePreview(null);
-      setStatus(result.status);
-      setRevision((v) => v + 1);
-    });
-  }, [bitmap, enqueue, sessionIdRef, setBitmapVersion, setMovePreview, setStatus, setRevision]);
+    const editor = editorRef.current;
+    if (!editor) return;
+    const result = editor.redo() as EditorEventResult;
+    applyEventResult(result);
+  }, [editorRef, applyEventResult]);
 
   const onCreateLayer = useCallback(() => {
-    enqueue(async () => {
-      const next = await createLayerAboveActive(sessionIdRef.current);
-      await applyStatusWithSnapshot(next, true);
-      prefetchDrawComposites(next);
-    });
-  }, [enqueue, sessionIdRef, applyStatusWithSnapshot, prefetchDrawComposites]);
+    const editor = editorRef.current;
+    if (!editor) return;
+    const next = editor.create_layer_above_active() as EditorStatus;
+    setStatus(next);
+    refreshBitmap();
+    setMovePreview(null);
+    setRevision((v) => v + 1);
+  }, [editorRef, setStatus, refreshBitmap, setMovePreview, setRevision]);
 
   const onDeleteLayer = useCallback(
     (layerId: number) => {
-      enqueue(async () => {
-        const next = await deleteLayer(sessionIdRef.current, layerId);
-        await applyStatusWithSnapshot(next, true);
-        prefetchDrawComposites(next);
-      });
+      const editor = editorRef.current;
+      if (!editor) return;
+      const next = editor.delete_layer(layerId) as EditorStatus;
+      setStatus(next);
+      refreshBitmap();
+      setMovePreview(null);
+      setRevision((v) => v + 1);
     },
-    [enqueue, sessionIdRef, applyStatusWithSnapshot, prefetchDrawComposites]
+    [editorRef, setStatus, refreshBitmap, setMovePreview, setRevision]
   );
 
   const onSelectLayer = useCallback(
     (layerId: number) => {
-      enqueue(async () => {
-        const next = await setActiveLayer(sessionIdRef.current, layerId);
-        await applyStatusWithSnapshot(next, false);
-        prefetchDrawComposites(next);
-      });
+      const editor = editorRef.current;
+      if (!editor) return;
+      const next = editor.set_active_layer(layerId) as EditorStatus;
+      setStatus(next);
+      setMovePreview(null);
+      setRevision((v) => v + 1);
     },
-    [enqueue, sessionIdRef, applyStatusWithSnapshot, prefetchDrawComposites]
+    [editorRef, setStatus, setMovePreview, setRevision]
   );
 
   const onToggleLayerVisibility = useCallback(
     (layerId: number) => {
-      enqueue(async () => {
-        const next = await toggleLayerVisibility(sessionIdRef.current, layerId);
-        await applyStatusWithSnapshot(next, true);
-        prefetchDrawComposites(next);
-      });
+      const editor = editorRef.current;
+      if (!editor) return;
+      const next = editor.toggle_layer_visibility(layerId) as EditorStatus;
+      setStatus(next);
+      refreshBitmap();
+      setMovePreview(null);
+      setRevision((v) => v + 1);
     },
-    [enqueue, sessionIdRef, applyStatusWithSnapshot, prefetchDrawComposites]
+    [editorRef, setStatus, refreshBitmap, setMovePreview, setRevision]
   );
 
   const onSetLayerOpacity = useCallback(
     (layerId: number, opacity: number) => {
-      enqueue(async () => {
-        const next = await setLayerOpacity(sessionIdRef.current, layerId, opacity);
-        await applyStatusWithSnapshot(next, true);
-        prefetchDrawComposites(next);
-      });
+      const editor = editorRef.current;
+      if (!editor) return;
+      const next = editor.set_layer_opacity(layerId, Math.max(0, Math.min(255, Math.round(opacity)))) as EditorStatus;
+      setStatus(next);
+      refreshBitmap();
+      setMovePreview(null);
+      setRevision((v) => v + 1);
     },
-    [enqueue, sessionIdRef, applyStatusWithSnapshot, prefetchDrawComposites]
+    [editorRef, setStatus, refreshBitmap, setMovePreview, setRevision]
   );
 
   const commitLayerName = useCallback(
@@ -152,12 +131,14 @@ export function useCanvasActions(params: Params) {
         setLayerNameDrafts((prev) => ({ ...prev, [layer.id]: layer.name }));
         return;
       }
-      enqueue(async () => {
-        const next = await renameLayer(sessionIdRef.current, layer.id, draft);
-        await applyStatusWithSnapshot(next, false);
-      });
+      const editor = editorRef.current;
+      if (!editor) return;
+      const next = editor.rename_layer(layer.id, draft) as EditorStatus;
+      setStatus(next);
+      setMovePreview(null);
+      setRevision((v) => v + 1);
     },
-    [layerNameDrafts, setLayerNameDrafts, enqueue, sessionIdRef, applyStatusWithSnapshot]
+    [layerNameDrafts, setLayerNameDrafts, editorRef, setStatus, setMovePreview, setRevision]
   );
 
   const onDropLayer = useCallback(
@@ -170,13 +151,15 @@ export function useCanvasActions(params: Params) {
       ids.splice(from, 1);
       ids.splice(to, 0, dragLayerId);
       setDragLayerId(null);
-      enqueue(async () => {
-        const next = await reorderLayers(sessionIdRef.current, ids);
-        await applyStatusWithSnapshot(next, true);
-        prefetchDrawComposites(next);
-      });
+      const editor = editorRef.current;
+      if (!editor) return;
+      const next = editor.reorder_layers(new Uint32Array(ids)) as EditorStatus;
+      setStatus(next);
+      refreshBitmap();
+      setMovePreview(null);
+      setRevision((v) => v + 1);
     },
-    [dragLayerId, status.layers, setDragLayerId, enqueue, sessionIdRef, applyStatusWithSnapshot, prefetchDrawComposites]
+    [dragLayerId, status.layers, setDragLayerId, editorRef, setStatus, refreshBitmap, setMovePreview, setRevision]
   );
 
   return {
@@ -191,4 +174,3 @@ export function useCanvasActions(params: Params) {
     onDropLayer,
   };
 }
-

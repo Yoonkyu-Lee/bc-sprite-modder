@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use super::state::{Editor, PixelChange};
-use super::tools::{flood_fill, normalize_rect, point_in_rect};
-use super::types::{EditorEventResult, PixelPatch, PointerInput, Point, Rect, SelectionMode, ToolKind};
+use crate::state::{Editor, PixelChange};
+use crate::tools::{flood_fill, normalize_rect, point_in_rect};
+use crate::types::{EditorEventResult, PixelPatch, PointerInput, Point, Rect, SelectionMode, ToolKind};
 
 impl Editor {
     fn handle_pointer_down(&mut self, input: &PointerInput) -> Option<PixelPatch> {

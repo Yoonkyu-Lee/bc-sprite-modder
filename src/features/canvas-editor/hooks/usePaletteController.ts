@@ -1,18 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { setActiveAlpha, setActiveColor } from "../backend";
+import { CanvasEditor } from "../engine";
 import { clamp, hexToRgb, hsvToRgb, rgbToHex, rgbToHsv, type PaletteState } from "../panel/color";
 import type { EditorStatus } from "../types";
 
 type UsePaletteControllerParams = {
   status: EditorStatus;
-  sessionIdRef: { current: string };
-  enqueue: (task: () => Promise<void>) => void;
+  editorRef: { current: CanvasEditor | null };
   setStatus: Dispatch<SetStateAction<EditorStatus>>;
   bumpRevision: () => void;
 };
 
 export function usePaletteController(params: UsePaletteControllerParams) {
-  const { status, sessionIdRef, enqueue, setStatus, bumpRevision } = params;
+  const { status, editorRef, setStatus, bumpRevision } = params;
 
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [palette, setPalette] = useState<PaletteState>({ h: 0, s: 0, v: 1, a: 255 });
@@ -24,7 +23,7 @@ export function usePaletteController(params: UsePaletteControllerParams) {
   const palettePendingRef = useRef<{ hex: string; alpha: number } | null>(null);
   const paletteRafRef = useRef<number | null>(null);
 
-  const pushPaletteToBackend = useCallback(
+  const pushPaletteToEditor = useCallback(
     (hex: string, alpha: number) => {
       palettePendingRef.current = { hex, alpha: clamp(Math.round(alpha), 0, 255) };
       if (paletteRafRef.current != null) return;
@@ -32,16 +31,15 @@ export function usePaletteController(params: UsePaletteControllerParams) {
         paletteRafRef.current = null;
         const payload = palettePendingRef.current;
         palettePendingRef.current = null;
-        if (!payload) return;
-        enqueue(async () => {
-          const colorStatus = await setActiveColor(sessionIdRef.current, payload.hex);
-          const alphaStatus = await setActiveAlpha(sessionIdRef.current, payload.alpha);
-          setStatus(alphaStatus ?? colorStatus);
-          bumpRevision();
-        });
+        const editor = editorRef.current;
+        if (!payload || !editor) return;
+        editor.set_active_color(payload.hex);
+        const next = editor.set_active_alpha(payload.alpha) as EditorStatus;
+        setStatus(next);
+        bumpRevision();
       });
     },
-    [bumpRevision, enqueue, sessionIdRef, setStatus]
+    [bumpRevision, editorRef, setStatus]
   );
 
   const applyPalette = useCallback(
@@ -55,9 +53,9 @@ export function usePaletteController(params: UsePaletteControllerParams) {
       setPalette(safe);
       const rgb = hsvToRgb(safe.h, safe.s, safe.v);
       const hex = rgbToHex(rgb.r, rgb.g, rgb.b);
-      pushPaletteToBackend(hex, safe.a);
+      pushPaletteToEditor(hex, safe.a);
     },
-    [pushPaletteToBackend]
+    [pushPaletteToEditor]
   );
 
   const updateSvFromClient = useCallback(
@@ -160,9 +158,7 @@ export function usePaletteController(params: UsePaletteControllerParams) {
       else if (mode === "h") updateHueFromClient(event.clientX);
       else if (mode === "a") updateAlphaFromClient(event.clientX);
     };
-    const onUp = () => {
-      paletteDragModeRef.current = null;
-    };
+    const onUp = () => { paletteDragModeRef.current = null; };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     return () => {
@@ -173,9 +169,7 @@ export function usePaletteController(params: UsePaletteControllerParams) {
 
   useEffect(
     () => () => {
-      if (paletteRafRef.current != null) {
-        cancelAnimationFrame(paletteRafRef.current);
-      }
+      if (paletteRafRef.current != null) cancelAnimationFrame(paletteRafRef.current);
     },
     []
   );

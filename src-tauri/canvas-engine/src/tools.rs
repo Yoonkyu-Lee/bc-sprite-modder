@@ -1,4 +1,4 @@
-use super::types::{Point, Rect};
+use crate::types::{Point, Rect};
 use std::collections::VecDeque;
 
 pub fn normalize_rect(a: Point, b: Point) -> Rect {

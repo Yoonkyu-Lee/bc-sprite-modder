@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use super::state::{Editor, PixelChange};
-use super::tools::bresenham_line;
-use super::types::{PixelPatch, Point};
+use crate::state::{Editor, PixelChange};
+use crate::tools::bresenham_line;
+use crate::types::{PixelPatch, Point};
 
 impl Editor {
     pub(crate) fn draw_segment_solid(&mut self, from: Point, to: Point, rgba: [u8; 4]) -> Option<PixelPatch> {

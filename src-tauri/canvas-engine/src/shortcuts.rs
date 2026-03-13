@@ -1,5 +1,5 @@
-use super::state::Editor;
-use super::types::{EditorEventResult, EditorStatus, Point, SelectionMode, ShortcutInput, ToolKind};
+use crate::state::Editor;
+use crate::types::{EditorEventResult, EditorStatus, Point, SelectionMode, ShortcutInput, ToolKind};
 
 impl Editor {
     pub(crate) fn set_tool(&mut self, tool: ToolKind) -> EditorStatus {

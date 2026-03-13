@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use super::types::{EditorStatus, LayerStatus, PixelPatch, Point, Rect, SelectionMode, SelectionState, ToolKind};
+use crate::types::{EditorStatus, LayerStatus, PixelPatch, Point, Rect, SelectionMode, SelectionState, ToolKind};
 
 #[derive(Clone)]
 pub(crate) struct PixelChange {
@@ -486,5 +486,127 @@ impl Editor {
             .ok_or("active layer missing after reorder".to_string())?;
         self.move_preview_cache = None;
         Ok(())
+    }
+
+    /// Returns a copy of the raw RGBA bitmap for the given layer, or None if not found.
+    pub(crate) fn layer_bitmap(&self, layer_id: u32) -> Option<Vec<u8>> {
+        self.layers
+            .iter()
+            .find(|l| l.id == layer_id)
+            .map(|l| l.bitmap.clone())
+    }
+
+    /// Overwrites the pixel data of the given layer with `data`.
+    /// `data` must be exactly `width * height * 4` bytes.
+    pub(crate) fn load_layer_pixels(&mut self, layer_id: u32, data: &[u8]) {
+        if let Some(layer) = self.layers.iter_mut().find(|l| l.id == layer_id) {
+            let expected = (self.width * self.height * 4) as usize;
+            if data.len() == expected {
+                layer.bitmap.copy_from_slice(data);
+            }
+        }
+    }
+}
+
+impl Editor {
+    /// Compute and store the move preview cache from current selection + layer state.
+    ///
+    /// Called at two distinct times:
+    ///   1. At `commit_select()` (prefetch): no FloatingLayer yet. Simulates the hole
+    ///      by excluding selected pixels from the active layer in the underlay pass.
+    ///   2. During a move session (cache rebuild): FloatingLayer exists. The source
+    ///      layer already has holes burned, so no exclusion is needed; selected_block
+    ///      is read from FloatingLayer.bitmap instead of the active layer.
+    pub(crate) fn build_move_preview_cache(&mut self) {
+        let Some(bounds) = self.selected_bounds() else {
+            self.move_preview_cache = None;
+            return;
+        };
+
+        let is_floating = self.floating_layer.is_some();
+        let selected_indices_vec: Vec<u32> = self.selected_indices.iter().copied().collect();
+        let selected_set: HashSet<u32> = selected_indices_vec.iter().copied().collect();
+        let pixel_count = self.width * self.height;
+        let active_id = self.active_layer().id;
+        let active_layer_index = self.active_layer_index;
+        let source_opacity = self.active_layer().opacity;
+
+        let bw = bounds.width.max(1) as usize;
+        let bh = bounds.height.max(1) as usize;
+
+        let selected_block = if is_floating {
+            self.floating_layer.as_ref().unwrap().bitmap.clone()
+        } else {
+            let mut block = vec![0u8; bw * bh * 4];
+            for idx in &selected_indices_vec {
+                let x = (*idx % self.width) as i32;
+                let y = (*idx / self.width) as i32;
+                let lx = x - bounds.x;
+                let ly = y - bounds.y;
+                if lx < 0 || ly < 0 || lx >= bounds.width || ly >= bounds.height {
+                    continue;
+                }
+                let src = Editor::rgba_at(self.active_bitmap(), *idx);
+                let dst_i = ((ly as usize * bw) + lx as usize) * 4;
+                block[dst_i] = src[0];
+                block[dst_i + 1] = src[1];
+                block[dst_i + 2] = src[2];
+                block[dst_i + 3] = src[3];
+            }
+            block
+        };
+
+        let mut underlay = vec![0u8; (pixel_count * 4) as usize];
+        for (layer_index, layer) in self.layers.iter().enumerate() {
+            if layer_index > active_layer_index || !layer.visible || layer.opacity == 0 {
+                continue;
+            }
+            for idx in 0..pixel_count {
+                if !is_floating && layer.id == active_id && selected_set.contains(&idx) {
+                    continue;
+                }
+                let src_raw = Editor::rgba_at(&layer.bitmap, idx);
+                if src_raw[3] == 0 {
+                    continue;
+                }
+                let src = [
+                    src_raw[0],
+                    src_raw[1],
+                    src_raw[2],
+                    ((src_raw[3] as u16 * layer.opacity as u16) / 255) as u8,
+                ];
+                let dst = Editor::rgba_at(&underlay, idx);
+                Editor::set_rgba(&mut underlay, idx, Editor::alpha_blend(src, dst));
+            }
+        }
+
+        let mut overlay = vec![0u8; (pixel_count * 4) as usize];
+        for (layer_index, layer) in self.layers.iter().enumerate() {
+            if layer_index <= active_layer_index || !layer.visible || layer.opacity == 0 {
+                continue;
+            }
+            for idx in 0..pixel_count {
+                let src_raw = Editor::rgba_at(&layer.bitmap, idx);
+                if src_raw[3] == 0 {
+                    continue;
+                }
+                let src = [
+                    src_raw[0],
+                    src_raw[1],
+                    src_raw[2],
+                    ((src_raw[3] as u16 * layer.opacity as u16) / 255) as u8,
+                ];
+                let dst = Editor::rgba_at(&overlay, idx);
+                Editor::set_rgba(&mut overlay, idx, Editor::alpha_blend(src, dst));
+            }
+        }
+
+        self.move_preview_cache = Some(MovePreviewCache {
+            selected_indices_vec,
+            selected_block,
+            underlay,
+            overlay,
+            source_opacity,
+        });
     }
 }

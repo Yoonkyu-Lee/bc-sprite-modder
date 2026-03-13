@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use super::state::{Editor, FloatingLayer, PixelChange};
-use super::types::{PixelPatch, Point, Rect};
+use crate::state::{Editor, FloatingLayer, PixelChange};
+use crate::types::{PixelPatch, Point, Rect};
 
 impl Editor {
     /// Lift the current selection off the active layer into a FloatingLayer.

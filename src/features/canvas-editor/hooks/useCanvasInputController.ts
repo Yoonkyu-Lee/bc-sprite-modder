@@ -11,11 +11,17 @@ import {
   type SetStateAction,
   type WheelEvent as ReactWheelEvent,
 } from "react";
-import { applyPatch, applyPatchWithComposites, decodeRgbaBase64, dispatchPointer, dispatchShortcut, getLayerComposites, getMovePreviewData, getSnapshot, setSelectionMode, setTool, setView } from "../backend";
+import { CanvasEditor } from "../engine";
 import { screenToPixel } from "../render";
 import { buildMovePreview, type MovePreviewState } from "../panel/movePreview";
 import { CANVAS_SIZE } from "../panel/status";
-import type { EditorStatus, Point, SelectionMode, ToolKind } from "../types";
+import type { EditorEventResult, EditorStatus, Point, Rect, SelectionMode, ToolKind } from "../types";
+
+type WasmMovePreviewMeta = {
+  bounds: Rect;
+  selectedIndices: number[];
+  opacity: number;
+};
 
 const ZOOM_MIN = 0.2;
 const ZOOM_MAX = 64;
@@ -23,8 +29,7 @@ const ZOOM_SCRUB_SENSITIVITY = 0.005;
 
 type Params = {
   canvasRef: RefObject<HTMLCanvasElement | null>;
-  sessionIdRef: { current: string };
-  enqueue: (task: () => Promise<void>) => void;
+  editorRef: RefObject<CanvasEditor | null>;
   status: EditorStatus;
   bitmap: Uint8ClampedArray | null;
   movePreview: MovePreviewState | null;
@@ -40,8 +45,7 @@ type Params = {
 export function useCanvasInputController(params: Params) {
   const {
     canvasRef,
-    sessionIdRef,
-    enqueue,
+    editorRef,
     status,
     bitmap,
     movePreview,
@@ -56,11 +60,6 @@ export function useCanvasInputController(params: Params) {
 
   const [zoomToolLatched, setZoomToolLatched] = useState(false);
   const [zoomToolHeld, setZoomToolHeld] = useState(false);
-
-  // Always-current snapshot of status; accessible inside async enqueue callbacks
-  // without stale-closure issues.
-  const latestStatusRef = useRef(status);
-  latestStatusRef.current = status;
 
   const panDragStartRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
   const zoomDragRef = useRef<{
@@ -77,19 +76,28 @@ export function useCanvasInputController(params: Params) {
   const moveRafRef = useRef<number | null>(null);
   const pendingViewRef = useRef<{ zoom: number; pan: Point } | null>(null);
   const viewRafRef = useRef<number | null>(null);
-  // Cached underlay/overlay composites for draw/erase tools.
-  // Invalidated only when the active layer or layer visibility/opacity changes.
-  // Reused across strokes to avoid an extra IPC round-trip on every pointer-down.
-  const drawCompositesRef = useRef<{
-    underlay: Uint8ClampedArray;
-    overlay: Uint8ClampedArray;
-    cacheKey: string;
-  } | null>(null);
-  // Pre-fetched move preview: populated in background right after selection commit
-  // so the first drag can skip the expensive IPC round-trip.
-  const prefetchedMovePreviewRef = useRef<MovePreviewState | null>(null);
 
   const isZoomToolActive = zoomToolLatched || zoomToolHeld;
+
+  const getCompositeBitmap = useCallback((): Uint8ClampedArray | null => {
+    const editor = editorRef.current;
+    if (!editor) return null;
+    return new Uint8ClampedArray(editor.get_composite_bitmap());
+  }, [editorRef]);
+
+  const applyResult = useCallback(
+    (result: EditorEventResult) => {
+      if (result.patch) {
+        const next = getCompositeBitmap();
+        if (next) {
+          setBitmap(next);
+          setBitmapVersion((v) => v + 1);
+        }
+      }
+      setStatus(result.status);
+    },
+    [getCompositeBitmap, setBitmap, setBitmapVersion, setStatus]
+  );
 
   const toPixel = useCallback(
     (event: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -117,15 +125,14 @@ export function useCanvasInputController(params: Params) {
         viewRafRef.current = null;
         const payload = pendingViewRef.current;
         pendingViewRef.current = null;
-        if (!payload) return;
-        enqueue(async () => {
-          const next = await setView(sessionIdRef.current, payload.zoom, payload.pan);
-          setStatus(next);
-          setRevision((v) => v + 1);
-        });
+        const editor = editorRef.current;
+        if (!payload || !editor) return;
+        const next = editor.set_view(payload.zoom, payload.pan.x, payload.pan.y) as EditorStatus;
+        setStatus(next);
+        setRevision((v) => v + 1);
       });
     },
-    [enqueue, sessionIdRef, setRevision, setStatus]
+    [editorRef, setRevision, setStatus]
   );
 
   const changeZoom = useCallback(
@@ -150,6 +157,28 @@ export function useCanvasInputController(params: Params) {
     },
     []
   );
+
+  const buildMovePreviewFromEditor = useCallback((): MovePreviewState | null => {
+    const editor = editorRef.current;
+    if (!editor) return null;
+    try {
+      const meta = editor.get_move_preview_meta() as WasmMovePreviewMeta;
+      const selectedBlock = editor.get_move_preview_selected_block() as Uint8Array;
+      const underlay = editor.get_move_preview_underlay() as Uint8Array;
+      const overlay = editor.get_move_preview_overlay() as Uint8Array;
+      return buildMovePreview(
+        CANVAS_SIZE,
+        meta.bounds,
+        meta.selectedIndices,
+        new Uint8ClampedArray(selectedBlock),
+        new Uint8ClampedArray(underlay),
+        new Uint8ClampedArray(overlay),
+        meta.opacity
+      );
+    } catch {
+      return null;
+    }
+  }, [editorRef]);
 
   const handlePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -189,88 +218,39 @@ export function useCanvasInputController(params: Params) {
         };
         return;
       }
-      const point = toPixel(event);
-      if (!bitmap) return;
+      const editor = editorRef.current;
+      if (!bitmap || !editor) return;
       event.currentTarget.setPointerCapture(event.pointerId);
-      // Capture at event time to avoid stale closure inside enqueue.
+
       const hadMovePreview = movePreview != null;
-      const currentTool = status.tool;
-      enqueue(async () => {
-        // For draw/erase: ensure underlay+overlay composites are cached so the
-        // patch can be correctly placed below layers above the active layer.
-        // The cache is keyed by active-layer-id + per-layer visibility/opacity, so
-        // it is reused across strokes and only refreshed when the layer stack changes.
-        if (currentTool === "draw" || currentTool === "erase") {
-          const { activeLayerId, layers } = latestStatusRef.current;
-          const cacheKey = `${activeLayerId}|${layers.map((l) => `${l.id},${l.visible},${l.opacity}`).join("|")}`;
-          if (!drawCompositesRef.current || drawCompositesRef.current.cacheKey !== cacheKey) {
-            const data = await getLayerComposites(sessionIdRef.current);
-            drawCompositesRef.current = {
-              underlay: decodeRgbaBase64(data.underlayRgbaBase64),
-              overlay: decodeRgbaBase64(data.overlayRgbaBase64),
-              cacheKey,
-            };
-          }
-        }
-        const result = await dispatchPointer(sessionIdRef.current, {
-          kind: "down",
-          x: point.x,
-          y: point.y,
-          button: event.button,
-        });
-        if (hadMovePreview && result.patch) {
-          // Finalize: patch covers only the source layer, but bitmap is a composite.
-          // Applying the patch directly would corrupt pixels from other layers.
-          const snapshot = await getSnapshot(sessionIdRef.current);
-          setBitmap(decodeRgbaBase64(snapshot.rgbaBase64));
-          setBitmapVersion((v) => v + 1);
-          setMovePreview(null);
-        } else {
-          const composites = drawCompositesRef.current;
-          if (composites && result.patch) {
-            applyPatchWithComposites(bitmap, result.patch, composites.underlay, composites.overlay);
+      const point = toPixel(event);
+      const result = editor.dispatch_pointer("down", point.x, point.y, event.button) as EditorEventResult;
+
+      if (hadMovePreview && result.patch) {
+        // Finalize: floating selection committed — grab fresh composite.
+        const next = getCompositeBitmap();
+        if (next) { setBitmap(next); setBitmapVersion((v) => v + 1); }
+        setMovePreview(null);
+      } else {
+        applyResult(result);
+        if (result.status.tool === "move" && result.status.selection.moving) {
+          if (hadMovePreview) {
+            setMovePreview((prev) =>
+              prev ? { ...prev, delta: result.status.selection.moveDelta } : null
+            );
           } else {
-            applyPatch(bitmap, result.patch);
-          }
-          if (result.patch) {
-            setBitmapVersion((v) => v + 1);
-          }
-          if (result.status.tool === "move" && result.status.selection.moving) {
-            if (hadMovePreview) {
-              // Preview data (underlay/overlay/mask) is unchanged between drags
-              // on the same floating selection — only delta needs updating.
-              setMovePreview((prev) =>
-                prev ? { ...prev, delta: result.status.selection.moveDelta } : null
-              );
-            } else {
-              // First drag on this selection.
-              // Use pre-fetched data if it arrived in background; otherwise fetch now.
-              const prefetched = prefetchedMovePreviewRef.current;
-              prefetchedMovePreviewRef.current = null;
-              if (prefetched) {
-                setMovePreview({ ...prefetched, delta: result.status.selection.moveDelta });
-              } else {
-                const previewData = await getMovePreviewData(sessionIdRef.current);
-                const preview = buildMovePreview(
-                  CANVAS_SIZE,
-                  previewData.bounds,
-                  previewData.selectedIndices,
-                  decodeRgbaBase64(previewData.selectedBlockRgbaBase64),
-                  decodeRgbaBase64(previewData.underlayRgbaBase64),
-                  decodeRgbaBase64(previewData.overlayRgbaBase64),
-                  previewData.opacity
-                );
-                preview.delta = result.status.selection.moveDelta;
-                setMovePreview(preview);
-              }
+            const preview = buildMovePreviewFromEditor();
+            if (preview) {
+              preview.delta = result.status.selection.moveDelta;
+              setMovePreview(preview);
             }
-          } else {
-            setMovePreview(null);
           }
+        } else {
+          setMovePreview(null);
         }
-        setStatus(result.status);
-        setRevision((v) => v + 1);
-      });
+      }
+      setStatus(result.status);
+      setRevision((v) => v + 1);
     },
     [
       focusPanel,
@@ -279,15 +259,17 @@ export function useCanvasInputController(params: Params) {
       status.zoom,
       status.pan.x,
       status.pan.y,
-      status.tool,
-      toPixel,
+      editorRef,
       bitmap,
       movePreview,
-      enqueue,
-      sessionIdRef,
-      setStatus,
+      toPixel,
+      getCompositeBitmap,
+      applyResult,
+      buildMovePreviewFromEditor,
+      setBitmap,
       setBitmapVersion,
       setMovePreview,
+      setStatus,
       setRevision,
     ]
   );
@@ -320,47 +302,23 @@ export function useCanvasInputController(params: Params) {
         });
         return;
       }
-      if (!pointerDragActiveRef.current) {
-        return;
-      }
-      pendingMoveRef.current = {
-        x: point.x,
-        y: point.y,
-        button: event.button,
-      };
+      if (!pointerDragActiveRef.current) return;
+      pendingMoveRef.current = { x: point.x, y: point.y, button: event.button };
       if (moveRafRef.current != null) return;
       moveRafRef.current = requestAnimationFrame(() => {
         moveRafRef.current = null;
         const payload = pendingMoveRef.current;
         pendingMoveRef.current = null;
-        if (!payload || !bitmap) return;
-        enqueue(async () => {
-          const result = await dispatchPointer(sessionIdRef.current, {
-            kind: "move",
-            x: payload.x,
-            y: payload.y,
-            button: payload.button,
-          });
-          const composites = drawCompositesRef.current;
-          if (composites && result.patch) {
-            applyPatchWithComposites(bitmap, result.patch, composites.underlay, composites.overlay);
-          } else {
-            applyPatch(bitmap, result.patch);
-          }
-          if (result.patch) {
-            setBitmapVersion((v) => v + 1);
-          }
-          setStatus(result.status);
-          setMovePreview((prev) => {
-            if (!prev) return prev;
-            if (!result.status.selection.moving) return null;
-            return {
-              ...prev,
-              delta: result.status.selection.moveDelta,
-            };
-          });
-          setRevision((v) => v + 1);
+        const editor = editorRef.current;
+        if (!payload || !editor) return;
+        const result = editor.dispatch_pointer("move", payload.x, payload.y, payload.button ?? -1) as EditorEventResult;
+        applyResult(result);
+        setMovePreview((prev) => {
+          if (!prev) return prev;
+          if (!result.status.selection.moving) return null;
+          return { ...prev, delta: result.status.selection.moveDelta };
         });
+        setRevision((v) => v + 1);
       });
     },
     [
@@ -371,10 +329,8 @@ export function useCanvasInputController(params: Params) {
       toPixel,
       setHoverPixel,
       status.zoom,
-      enqueue,
-      sessionIdRef,
-      setBitmapVersion,
-      setStatus,
+      editorRef,
+      applyResult,
       setMovePreview,
       setRevision,
     ]
@@ -391,7 +347,8 @@ export function useCanvasInputController(params: Params) {
         panDragStartRef.current = null;
         return;
       }
-      if (!bitmap) return;
+      const editor = editorRef.current;
+      if (!bitmap || !editor) return;
       pendingMoveRef.current = null;
       if (moveRafRef.current != null) {
         cancelAnimationFrame(moveRafRef.current);
@@ -399,68 +356,27 @@ export function useCanvasInputController(params: Params) {
       }
       const point = toPixel(event);
       setHoverPixel(point);
-      enqueue(async () => {
-        const result = await dispatchPointer(sessionIdRef.current, {
-          kind: "up",
-          x: point.x,
-          y: point.y,
-          button: event.button,
-        });
-        applyPatch(bitmap, result.patch);
-        if (result.patch) {
-          setBitmapVersion((v) => v + 1);
-        }
-        setStatus(result.status);
-        setMovePreview((prev) => {
-          if (!prev) return null;
-          if (result.status.tool !== "move") return null;
-          if (!result.status.selection.rect && !result.status.selection.draftRect) return null;
-          return {
-            ...prev,
-            delta: result.status.selection.moveDelta,
-          };
-        });
-        // Selection was just committed: pre-fetch move preview data in the background
-        // so the first drag can start without waiting for the IPC round-trip.
-        if (result.status.tool === "select" && result.status.selection.rect != null) {
-          prefetchedMovePreviewRef.current = null;
-          const sessionId = sessionIdRef.current;
-          getMovePreviewData(sessionId)
-            .then((previewData) => {
-              prefetchedMovePreviewRef.current = buildMovePreview(
-                CANVAS_SIZE,
-                previewData.bounds,
-                previewData.selectedIndices,
-                decodeRgbaBase64(previewData.selectedBlockRgbaBase64),
-                decodeRgbaBase64(previewData.underlayRgbaBase64),
-                decodeRgbaBase64(previewData.overlayRgbaBase64),
-                previewData.opacity
-              );
-            })
-            .catch(() => {
-              prefetchedMovePreviewRef.current = null;
-            });
-        }
-        setRevision((v) => v + 1);
+      const result = editor.dispatch_pointer("up", point.x, point.y, event.button) as EditorEventResult;
+      applyResult(result);
+      setMovePreview((prev) => {
+        if (!prev) return null;
+        if (result.status.tool !== "move") return null;
+        if (!result.status.selection.rect && !result.status.selection.draftRect) return null;
+        return { ...prev, delta: result.status.selection.moveDelta };
       });
+      setRevision((v) => v + 1);
     },
-    [bitmap, enqueue, sessionIdRef, setBitmapVersion, setHoverPixel, setMovePreview, setRevision, setStatus, toPixel]
+    [bitmap, editorRef, toPixel, setHoverPixel, applyResult, setMovePreview, setRevision]
   );
 
   const handlePointerLeave = useCallback(() => {
     setHoverPixel(null);
-    if (!status.selection.moving) {
-      pointerDragActiveRef.current = false;
-    }
+    if (!status.selection.moving) pointerDragActiveRef.current = false;
   }, [setHoverPixel, status.selection.moving]);
 
   const canvasCursor = useMemo(() => {
-    if (zoomDragRef.current) {
-      return "ew-resize";
-    }
-    if (isZoomToolActive) {
-      return "zoom-in";
-    }
+    if (zoomDragRef.current) return "ew-resize";
+    if (isZoomToolActive) return "zoom-in";
     return status.tool === "move" ? (status.selection.moving ? "grabbing" : "grab") : "crosshair";
   }, [isZoomToolActive, status.selection.moving, status.tool]);
 
@@ -468,10 +384,7 @@ export function useCanvasInputController(params: Params) {
     (event: ReactWheelEvent<HTMLCanvasElement>) => {
       event.preventDefault();
       if (event.ctrlKey) {
-        syncView(status.zoom, {
-          x: status.pan.x - event.deltaY,
-          y: status.pan.y,
-        });
+        syncView(status.zoom, { x: status.pan.x - event.deltaY, y: status.pan.y });
         return;
       }
       syncView(status.zoom, {
@@ -488,9 +401,7 @@ export function useCanvasInputController(params: Params) {
       const keyLower = key.toLowerCase();
       if (!event.ctrlKey && !event.shiftKey && !event.altKey && keyLower === "z") {
         event.preventDefault();
-        if (!zoomToolHeld) {
-          setZoomToolHeld(true);
-        }
+        if (!zoomToolHeld) setZoomToolHeld(true);
         return;
       }
       const isShortcutKey =
@@ -509,124 +420,64 @@ export function useCanvasInputController(params: Params) {
         event.preventDefault();
         event.stopPropagation();
       }
-      const ctrl = event.ctrlKey;
-      const shift = event.shiftKey;
-      const alt = event.altKey;
-      const hadMovePreview = movePreview != null;
-      enqueue(async () => {
-        const result = await dispatchShortcut(sessionIdRef.current, {
-          key,
-          ctrl,
-          shift,
-          alt,
-        });
-        if (hadMovePreview && result.patch) {
-          // Enter finalize: patch covers only the source layer, bitmap is composite.
-          const snapshot = await getSnapshot(sessionIdRef.current);
-          setBitmap(decodeRgbaBase64(snapshot.rgbaBase64));
-          setBitmapVersion((v) => v + 1);
-          setMovePreview(null);
-        } else if (bitmap) {
-          applyPatch(bitmap, result.patch);
-          if (result.patch) {
-            setBitmapVersion((v) => v + 1);
-          }
-        }
-        setStatus(result.status);
-        if (hadMovePreview && result.status.tool !== "move") {
-          const snapshot = await getSnapshot(sessionIdRef.current);
-          setBitmap(decodeRgbaBase64(snapshot.rgbaBase64));
-          setBitmapVersion((v) => v + 1);
-          setMovePreview(null);
-        } else if (!result.status.selection.moving && result.status.tool !== "move") {
-          setMovePreview(null);
-        }
-        setRevision((v) => v + 1);
-      });
+      const editor = editorRef.current;
+      if (!editor) return;
+      const result = editor.dispatch_shortcut(key, event.ctrlKey, event.shiftKey, event.altKey) as EditorEventResult;
+      if (result.patch) {
+        const next = getCompositeBitmap();
+        if (next) { setBitmap(next); setBitmapVersion((v) => v + 1); }
+      }
+      setStatus(result.status);
+      if (result.status.tool !== "move" || !result.status.selection.moving) {
+        setMovePreview(null);
+      }
+      setRevision((v) => v + 1);
     },
-    [zoomToolHeld, movePreview, enqueue, sessionIdRef, bitmap, setBitmapVersion, setStatus, setBitmap, setMovePreview, setRevision]
+    [zoomToolHeld, editorRef, getCompositeBitmap, setBitmap, setBitmapVersion, setStatus, setMovePreview, setRevision]
   );
 
   const handleKeyUp = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
-    const keyLower = event.key.toLowerCase();
-    if (keyLower === "z") {
-      setZoomToolHeld(false);
-    }
+    if (event.key.toLowerCase() === "z") setZoomToolHeld(false);
   }, []);
 
   const selectTool = useCallback(
     (tool: ToolKind) => {
-      enqueue(async () => {
-        const hadMovePreview = movePreview != null;
-        const next = await setTool(sessionIdRef.current, tool);
-        if (hadMovePreview) {
-          const snapshot = await getSnapshot(sessionIdRef.current);
-          setBitmap(decodeRgbaBase64(snapshot.rgbaBase64));
-          setBitmapVersion((v) => v + 1);
-          setMovePreview(null);
-        }
-        setStatus(next);
-        setRevision((v) => v + 1);
-      });
+      const editor = editorRef.current;
+      if (!editor) return;
+      const hadMovePreview = movePreview != null;
+      const next = editor.set_tool(tool) as EditorStatus;
+      if (hadMovePreview) {
+        const bmp = getCompositeBitmap();
+        if (bmp) { setBitmap(bmp); setBitmapVersion((v) => v + 1); }
+        setMovePreview(null);
+      }
+      setStatus(next);
+      setRevision((v) => v + 1);
     },
-    [enqueue, movePreview, sessionIdRef, setBitmap, setBitmapVersion, setMovePreview, setStatus, setRevision]
+    [editorRef, movePreview, getCompositeBitmap, setBitmap, setBitmapVersion, setMovePreview, setStatus, setRevision]
   );
 
   const selectSelectionMode = useCallback(
     (mode: SelectionMode) => {
-      enqueue(async () => {
-        const hadMovePreview = movePreview != null;
-        const next = await setSelectionMode(sessionIdRef.current, mode);
-        if (hadMovePreview) {
-          const snapshot = await getSnapshot(sessionIdRef.current);
-          setBitmap(decodeRgbaBase64(snapshot.rgbaBase64));
-          setBitmapVersion((v) => v + 1);
-          setMovePreview(null);
-        }
-        setStatus(next);
-        setRevision((v) => v + 1);
-      });
+      const editor = editorRef.current;
+      if (!editor) return;
+      const hadMovePreview = movePreview != null;
+      const next = editor.set_selection_mode(mode) as EditorStatus;
+      if (hadMovePreview) {
+        const bmp = getCompositeBitmap();
+        if (bmp) { setBitmap(bmp); setBitmapVersion((v) => v + 1); }
+        setMovePreview(null);
+      }
+      setStatus(next);
+      setRevision((v) => v + 1);
     },
-    [enqueue, movePreview, sessionIdRef, setBitmap, setBitmapVersion, setMovePreview, setStatus, setRevision]
+    [editorRef, movePreview, getCompositeBitmap, setBitmap, setBitmapVersion, setMovePreview, setStatus, setRevision]
   );
-
-  /**
-   * Prefetches draw/erase composites (underlay + overlay) for the current active
-   * layer in the background.  Call this after any layer-structure change (select,
-   * create, delete, reorder, toggle visibility, set opacity) so that the very
-   * first draw stroke after the change doesn't have to wait for an extra IPC call.
-   */
-  const prefetchDrawComposites = useCallback((knownStatus?: Pick<EditorStatus, "activeLayerId" | "layers">) => {
-    const src = knownStatus ?? latestStatusRef.current;
-    const cacheKey = `${src.activeLayerId}|${src.layers.map((l) => `${l.id},${l.visible},${l.opacity}`).join("|")}`;
-    // Invalidate stale cache immediately so in-progress draws use fresh composites.
-    drawCompositesRef.current = null;
-    getLayerComposites(sessionIdRef.current)
-      .then((data) => {
-        // Only store if the layer structure hasn't changed while we were fetching.
-        const cur = latestStatusRef.current;
-        const curKey = `${cur.activeLayerId}|${cur.layers.map((l) => `${l.id},${l.visible},${l.opacity}`).join("|")}`;
-        if (curKey === cacheKey) {
-          drawCompositesRef.current = {
-            underlay: decodeRgbaBase64(data.underlayRgbaBase64),
-            overlay: decodeRgbaBase64(data.overlayRgbaBase64),
-            cacheKey,
-          };
-        }
-      })
-      .catch(() => {
-        drawCompositesRef.current = null;
-      });
-  }, [sessionIdRef]);
 
   useEffect(
     () => () => {
-      if (moveRafRef.current != null) {
-        cancelAnimationFrame(moveRafRef.current);
-      }
-      if (viewRafRef.current != null) {
-        cancelAnimationFrame(viewRafRef.current);
-      }
+      if (moveRafRef.current != null) cancelAnimationFrame(moveRafRef.current);
+      if (viewRafRef.current != null) cancelAnimationFrame(viewRafRef.current);
     },
     []
   );
@@ -648,6 +499,5 @@ export function useCanvasInputController(params: Params) {
     handleKeyUp,
     selectTool,
     selectSelectionMode,
-    prefetchDrawComposites,
   };
 }

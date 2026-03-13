@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
-use super::state::Editor;
-use super::types::{Point, Rect, SelectionMode};
+use crate::state::Editor;
+use crate::types::{Point, Rect, SelectionMode};
 
 impl Editor {
     pub(crate) fn build_selection_indices_from_rect(&self, rect: Rect) -> HashSet<u32> {
