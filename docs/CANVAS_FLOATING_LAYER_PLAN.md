@@ -3,154 +3,154 @@
 ## 목표
 
 현재 선택 이동 시 사용하는 "3버퍼 시뮬레이션" 방식을 포토샵의 FloatingLayer 개념에 맞게 구조 전환.
+소스 레이어에 구멍(hole)을 실제로 burn하고, `composite_bitmap()`이 FloatingLayer를 직접 합성.
 
 ---
 
-## 변수 분석: 현재 구현과 포토샵의 차이점
+## 현재 구현의 구조적 문제
 
-### 변수 1 (핵심): `composite_bitmap()`이 FloatingLayer를 모른다
-
-**현재 방식:**
-- Move 세션 중에도 소스 레이어의 `bitmap`은 **수정되지 않는다**
-- 렌더링은 프론트엔드 WebGL이 `underlay / floating / overlay` 3버퍼로 처리
-- `composite_bitmap()`은 레이어 bitmap만 합성 → move 세션 중 호출 시 **이동 전 상태** 반환
-- 현재는 프론트엔드가 move 중에 `get_snapshot`을 사용하지 않아서 숨겨진 문제
-
-**Burn 방식(포토샵식)으로 바꾸면:**
-- move 시작 시 소스 레이어에 구멍(hole)을 실제로 burn
-- `composite_bitmap()`은 구멍 뚫린 레이어만 보므로 **FloatingLayer를 모르면 깨진 이미지 반환**
-- `get_snapshot`, undo 스택 커밋, 향후 실시간 썸네일 등 모든 composite 호출에서 FloatingLayer를 합성해야 함
-
-**결론:** Burn 방식으로 전환하면 `composite_bitmap()`에 FloatingLayer 합성 로직 추가가 필수.
+| 문제 | 현상 | 영향 |
+|------|------|------|
+| `composite_bitmap()`이 FloatingLayer를 모름 | move 세션 중 snapshot이 이동 전 상태 반환 | `get_snapshot`, undo, 썸네일 등에서 잘못된 이미지 |
+| 레이어 opacity가 floating block에 미적용 | `selected_block`은 raw RGBA, underlay는 opacity 적용됨 | 활성 레이어 opacity < 255일 때 floating block이 다른 투명도로 렌더됨 |
 
 ---
 
-### 변수 2 (잠재적 버그): 레이어 opacity가 floating block에 적용되지 않음
+## 전환 후 아키텍처
 
-**현재 방식:**
-- `build_move_preview_cache()`에서 `selected_block`은 `active_bitmap()`의 raw RGBA를 그대로 복사
-- `underlay` 계산 시에는 `layer.opacity`를 알파에 곱해서 합성
-- floating block은 opacity 미적용 → **활성 레이어 opacity < 255일 때 시각적 불일치**
+### 새 구조체: `FloatingLayer`
 
-```
-underlay: layer.opacity 적용됨  ✓
-floating block: layer.opacity 미적용  ✗ ← 잠재적 버그
-overlay: layer.opacity 적용됨  ✓
-```
-
-**FloatingLayer 구조체로 전환하면:**
-- `FloatingLayer { opacity: u8, ... }`에 소스 레이어의 opacity를 복사
-- 프론트엔드 렌더 시 해당 opacity 적용 → 자연스럽게 해결
-
----
-
-## 구현 옵션
-
-### Option A: 완전한 Burn 방식 (포토샵 원리 그대로)
-
-move 시작 시 소스 레이어 bitmap에 즉시 구멍 burn.
-
-```
-FloatingLayer {
-    source_layer_id: u32,
-    bitmap: Vec<u8>,      // 선택된 픽셀들
-    offset: Point,        // 현재 오프셋
-    bounds: Rect,         // 원본 바운딩박스
-    opacity: u8,          // 소스 레이어에서 복사
+```rust
+pub(crate) struct FloatingLayer {
+    pub(crate) source_layer_id: u32,       // 원본 레이어
+    pub(crate) bitmap: Vec<u8>,            // 선택된 픽셀 (canvas 좌표 기준 full-size)
+    pub(crate) selected_indices: Vec<u32>, // 선택 픽셀 인덱스
+    pub(crate) offset: Point,              // 현재 이동 오프셋
+    pub(crate) bounds: Rect,               // 원본 바운딩박스
+    pub(crate) opacity: u8,                // 소스 레이어에서 복사 (opacity 버그 수정)
+    pub(crate) original_pixels: Vec<u8>,   // hole 복원용 스냅샷 (선택 픽셀만, ~N*4바이트)
 }
 ```
 
-**장점:**
-- 포토샵과 내부 원리 동일
-- `composite_bitmap()`이 항상 정확한 상태 반환 (FloatingLayer 합성 후)
-- 향후 크로스 레이어 drop target 지원 구조적으로 깔끔
+### `Editor`에 추가
 
-**단점:**
-- `composite_bitmap()`에 FloatingLayer 합성 로직 추가 필요
-- move 시작 시 소스 레이어를 실제로 수정하므로 cancel 시 복원 로직 필요
-- 변경 범위가 넓음
+```rust
+pub(crate) floating_layer: Option<FloatingLayer>,
+```
 
-**변경 파일:**
-- `state.rs`: `PointerSession` move 필드들 → `FloatingLayer` 구조체로 대체
-- `api.rs`: `composite_bitmap()` → FloatingLayer 인식 추가, `build_move_preview_cache()` 수정
-- `input.rs`: `handle_pointer_down` Move 세션 시작 시 burn 로직
-- `history.rs`: undo/redo 중 cancel → 구멍 복원 로직 (현재와 유사)
+### `PointerSession`에서 제거
+
+```rust
+// 제거
+move_base_bitmap: Option<Vec<u8>>,     // FloatingLayer.original_pixels로 대체 (전체 레이어 → 선택 픽셀만)
+move_selected_mask: Vec<u8>,           // FloatingLayer 내부로
+move_selection_bounds: Option<Rect>,   // FloatingLayer.bounds로
+move_current_delta: Point,             // FloatingLayer.offset으로
+```
 
 ---
 
-### Option B: 구조만 FloatingLayer로 정리 (Lazy 방식 유지)
+## `composite_bitmap()` 변경
 
-소스 레이어 bitmap은 건드리지 않고, 데이터를 `FloatingLayer` 구조체로 정리만 함.
+기존 레이어 합성 후 FloatingLayer를 오프셋 적용해서 합성. 약 20줄 추가.
 
-```
-FloatingLayer {
-    source_layer_id: u32,
-    bitmap: Vec<u8>,      // ← 현재 MovePreviewCache.selected_block
-    offset: Point,        // ← 현재 move_current_delta
-    bounds: Rect,         // ← 현재 move_selection_bounds
-    opacity: u8,          // ← 현재 누락된 필드, 신규 추가
+```rust
+pub(crate) fn composite_bitmap(&self) -> Vec<u8> {
+    let mut out = vec![0u8; (self.width * self.height * 4) as usize];
+
+    // 기존: 일반 레이어 합성 (소스 레이어는 hole이 burn된 상태)
+    for layer in &self.layers { ... }
+
+    // 추가: FloatingLayer를 offset 적용해서 합성
+    if let Some(ref fl) = self.floating_layer {
+        for idx in &fl.selected_indices {
+            let src_x = (*idx % self.width) as i32 + fl.offset.x;
+            let src_y = (*idx / self.width) as i32 + fl.offset.y;
+            if src_x < 0 || src_y < 0 || src_x >= self.width as i32 || src_y >= self.height as i32 {
+                continue;
+            }
+            let dst_idx = src_y as u32 * self.width + src_x as u32;
+            let src_raw = Self::rgba_at(&fl.bitmap, *idx);
+            let src = [src_raw[0], src_raw[1], src_raw[2],
+                       ((src_raw[3] as u16 * fl.opacity as u16) / 255) as u8];
+            let dst = Self::rgba_at(&out, dst_idx);
+            Self::set_rgba(&mut out, dst_idx, Self::alpha_blend(src, dst));
+        }
+    }
+    out
 }
 ```
 
-**장점:**
-- `composite_bitmap()` 수정 불필요 (현재처럼 move 중에도 pre-move 상태 반환, 문제없음)
-- 변경 범위 좁음: `PointerSession` 필드 재구성 + `MovePreviewCache` 일부 통합
-- opacity 버그 수정 포함
-- 크로스 레이어 붙여넣기도 `source_layer_id`를 추가하면 지원 가능
+---
 
-**단점:**
-- 포토샵과 내부 원리가 완전히 같지는 않음
-- 향후 "move 중 get_snapshot 정확도" 요구 시 추가 작업 필요
+## Move 세션 흐름 변경
+
+### 시작 (`handle_pointer_down` Move)
+
+```
+현재: move_base_bitmap = active_bitmap().to_vec()  (전체 레이어 ~4MB 복사)
+변경: FloatingLayer 생성 + 소스 레이어에 hole burn
+```
+
+1. `selected_indices`로 FloatingLayer 생성 (bitmap, original_pixels 복사)
+2. 소스 레이어의 선택 픽셀을 투명으로 burn
+3. `self.floating_layer = Some(fl)`
+
+### 이동 중 (`update_move_preview_state`)
+
+```
+현재: move_current_delta 업데이트 → selection.move_delta 업데이트
+변경: floating_layer.offset 업데이트 → selection.move_delta 업데이트
+```
+
+### 커밋 (`finalize_move_session`)
+
+```
+현재: move_base_bitmap에서 선택 영역 지우고, offset 위치에 픽셀 기록 → PixelPatch
+변경: source_layer hole + FloatingLayer offset 위치 픽셀을 합쳐서 PixelPatch 생성
+```
+
+`before`: source_layer_id 기준 hole 픽셀들 + offset 위치 기존 픽셀들
+`after`: hole은 투명, offset 위치에 FloatingLayer 픽셀 합성
+
+### 취소 (`cancel_move_session`)
+
+```
+현재: move_base_bitmap으로 active_bitmap 전체 복원
+변경: original_pixels로 선택 픽셀만 복원 (훨씬 가볍고 명확)
+```
 
 ---
 
-## 권장 방향
+## 프론트엔드 렌더링
 
-**Option B 선택 후 단계적으로 Option A로 이행.**
+3버퍼 WebGL 렌더링(`underlay / floating / overlay`)은 **성능상 그대로 유지**.
+`composite_bitmap()` 정확도와 프론트엔드 실시간 렌더링은 독립적으로 공존.
 
-이유:
-1. 현재 개발 단계에서 `composite_bitmap()` 리팩터는 불필요한 범위 확대
-2. 구조적 정리(FloatingLayer 구조체화 + opacity 버그 수정)만으로도 목표 달성
-3. 향후 크로스 레이어 기능 추가 시 그 시점에 Burn 방식으로 전환하는 것이 자연스러움
+변경 사항:
+- `MovePreviewData`에 `opacity: u8` 필드 추가
+- WebGL 렌더러에서 floating block 그릴 때 해당 opacity 적용
 
 ---
 
-## 최종 구조 변경 요약 (Option B 기준)
+## 변경 범위 요약
 
-### 제거
+| 파일 | 변경 내용 |
+|------|---------|
+| `state.rs` | `FloatingLayer` 구조체 추가, `PointerSession` move 필드 제거, `Editor.floating_layer` 추가 |
+| `api.rs` | `composite_bitmap()` FloatingLayer 합성 추가, `build_move_preview_cache()` opacity 전달 |
+| `input.rs` | Move 세션 시작(burn), `update_move_preview_state` offset 업데이트 |
+| `history.rs` | undo/redo: `cancel_move_session` 취소 후 진행 (로직 동일, 구현만 변경) |
+| 타입 파일 | `MovePreviewData`에 `opacity` 추가 |
+| 프론트엔드 훅/WebGL | opacity 필드 수신 및 floating 렌더 시 적용 |
 
-| 현재 위치 | 필드 | 대체 |
-|----------|------|------|
-| `PointerSession` | `move_selected_mask` | `FloatingLayer` 내부로 |
-| `PointerSession` | `move_current_delta` | `FloatingLayer.offset` |
-| `PointerSession` | `move_selection_bounds` | `FloatingLayer.bounds` |
-| `PointerSession` | `move_base_bitmap` | `FloatingLayer` cancel 시 `selected_block` 복원으로 대체 |
-| `MovePreviewCache` | `selected_block` | `FloatingLayer.bitmap`과 통합 |
-| `MovePreviewCache` | `selected_indices_vec` | `FloatingLayer` 내부 |
-
-### 추가
-
-| 위치 | 내용 |
-|------|------|
-| `Editor` | `floating_layer: Option<FloatingLayer>` |
-| `FloatingLayer` | `opacity: u8` (opacity 버그 수정) |
-| `FloatingLayer` | `source_layer_id: u32` (크로스 레이어 준비) |
-
-### 유지
+## 유지되는 것
 
 | 항목 | 이유 |
 |------|------|
 | `MovePreviewCache.underlay` / `overlay` | 렌더링 성능 캐시, 동일하게 활용 |
-| `build_move_preview_cache()` 프리패치 | 성능 최적화, 그대로 유지 |
-| `composite_bitmap()` | 수정 불필요 |
+| `build_move_preview_cache()` 프리패치 구조 | 성능 최적화 그대로 |
 | `PixelPatch` undo/redo 시스템 | 동일하게 활용 |
-| `alpha_blend()` | 동일 |
+| `alpha_blend()` | 수식 동일 |
 | `selected_indices: HashSet<u32>` | 선택 SoT 동일 |
-
----
-
-## 프론트엔드 변경 사항
-
-- `MovePreviewData` 타입에 `opacity: u8` 필드 추가
-- WebGL 렌더러에서 floating block 그릴 때 해당 opacity 적용
-- 나머지 로직 변경 없음
+| 프론트엔드 3버퍼 WebGL 렌더링 | 실시간 성능, 그대로 유지 |

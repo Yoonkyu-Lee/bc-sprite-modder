@@ -8,11 +8,34 @@ pub(crate) struct PixelChange {
     pub(crate) after: [u8; 4],
 }
 
+/// A floating selection lifted off the source layer.
+/// The source layer has the selected pixels burned to transparent.
+/// On commit (finalize) these pixels are composited at `offset` into the target layer.
+/// On cancel, `original_pixels` is used to restore the source layer.
+pub(crate) struct FloatingLayer {
+    pub(crate) source_layer_id: u32,
+    /// Bounds-local RGBA bitmap (bounds.width * bounds.height * 4 bytes).
+    pub(crate) bitmap: Vec<u8>,
+    /// Canvas-space pixel indices that make up this floating layer.
+    pub(crate) selected_indices: Vec<u32>,
+    /// Current move offset relative to original position.
+    pub(crate) offset: Point,
+    /// Bounding box of the selection in canvas space (original position).
+    pub(crate) bounds: Rect,
+    /// Opacity inherited from the source layer at float-start time.
+    pub(crate) opacity: u8,
+    /// Original RGBA for each pixel in selected_indices (N * 4 bytes, packed).
+    /// Used to restore the source layer on cancel.
+    pub(crate) original_pixels: Vec<u8>,
+}
+
 pub(crate) struct MovePreviewCache {
     pub(crate) selected_indices_vec: Vec<u32>,
     pub(crate) selected_block: Vec<u8>,
     pub(crate) underlay: Vec<u8>,
     pub(crate) overlay: Vec<u8>,
+    /// Active layer opacity captured at cache-build time (used when no FloatingLayer yet).
+    pub(crate) source_opacity: u8,
 }
 
 #[derive(Default)]
@@ -22,10 +45,6 @@ pub(crate) struct PointerSession {
     pub(crate) select_start: Option<Point>,
     pub(crate) move_start: Option<Point>,
     pub(crate) move_drag_origin: Option<Point>,
-    pub(crate) move_base_bitmap: Option<Vec<u8>>,
-    pub(crate) move_selected_mask: Vec<u8>,
-    pub(crate) move_selection_bounds: Option<Rect>,
-    pub(crate) move_current_delta: Point,
 }
 
 pub(crate) struct Editor {
@@ -47,6 +66,8 @@ pub(crate) struct Editor {
     pub(crate) pointer: PointerSession,
     pub(crate) next_layer_id: u32,
     pub(crate) move_preview_cache: Option<MovePreviewCache>,
+    /// Active floating selection. When Some, source layer has pixels burned to transparent.
+    pub(crate) floating_layer: Option<FloatingLayer>,
 }
 
 pub(crate) struct Layer {
@@ -93,6 +114,7 @@ impl Editor {
             pointer: PointerSession::default(),
             next_layer_id: 2,
             move_preview_cache: None,
+            floating_layer: None,
         }
     }
 
@@ -234,28 +256,69 @@ impl Editor {
         Self::set_rgba(self.active_bitmap_mut(), idx, rgba);
     }
 
+    /// Composite all layers in z-order, inserting the FloatingLayer at the correct
+    /// z-position (immediately above its source layer) if one is active.
     pub(crate) fn composite_bitmap(&self) -> Vec<u8> {
         let mut out = vec![0u8; (self.width * self.height * 4) as usize];
-        for layer in &self.layers {
-            if !layer.visible || layer.opacity == 0 {
-                continue;
-            }
-            for idx in 0..(self.width * self.height) {
-                let src_raw = Self::rgba_at(&layer.bitmap, idx);
-                if src_raw[3] == 0 {
-                    continue;
+
+        // Determine at which layer index to insert the floating layer.
+        let float_insert_after: Option<usize> = self
+            .floating_layer
+            .as_ref()
+            .and_then(|fl| self.layer_index_by_id(fl.source_layer_id));
+
+        for (layer_index, layer) in self.layers.iter().enumerate() {
+            if layer.visible && layer.opacity > 0 {
+                for idx in 0..(self.width * self.height) {
+                    let src_raw = Self::rgba_at(&layer.bitmap, idx);
+                    if src_raw[3] == 0 {
+                        continue;
+                    }
+                    let src = [
+                        src_raw[0],
+                        src_raw[1],
+                        src_raw[2],
+                        ((src_raw[3] as u16 * layer.opacity as u16) / 255) as u8,
+                    ];
+                    let dst = Self::rgba_at(&out, idx);
+                    Self::set_rgba(&mut out, idx, Self::alpha_blend(src, dst));
                 }
-                let src = [
-                    src_raw[0],
-                    src_raw[1],
-                    src_raw[2],
-                    ((src_raw[3] as u16 * layer.opacity as u16) / 255) as u8,
-                ];
-                let dst = Self::rgba_at(&out, idx);
-                let blended = Self::alpha_blend(src, dst);
-                Self::set_rgba(&mut out, idx, blended);
+            }
+
+            // Insert floating layer right above its source layer.
+            if Some(layer_index) == float_insert_after {
+                let fl = self.floating_layer.as_ref().unwrap();
+                let bw = fl.bounds.width.max(1) as usize;
+                for &src_idx in &fl.selected_indices {
+                    let dst_x = (src_idx % self.width) as i32 + fl.offset.x;
+                    let dst_y = (src_idx / self.width) as i32 + fl.offset.y;
+                    if dst_x < 0
+                        || dst_y < 0
+                        || dst_x >= self.width as i32
+                        || dst_y >= self.height as i32
+                    {
+                        continue;
+                    }
+                    let dst_idx = dst_y as u32 * self.width + dst_x as u32;
+                    let bx = (src_idx % self.width) as i32 - fl.bounds.x;
+                    let by = (src_idx / self.width) as i32 - fl.bounds.y;
+                    let li = (by as usize * bw + bx as usize) * 4;
+                    let src_raw = [fl.bitmap[li], fl.bitmap[li + 1], fl.bitmap[li + 2], fl.bitmap[li + 3]];
+                    if src_raw[3] == 0 {
+                        continue;
+                    }
+                    let src = [
+                        src_raw[0],
+                        src_raw[1],
+                        src_raw[2],
+                        ((src_raw[3] as u16 * fl.opacity as u16) / 255) as u8,
+                    ];
+                    let dst = Self::rgba_at(&out, dst_idx);
+                    Self::set_rgba(&mut out, dst_idx, Self::alpha_blend(src, dst));
+                }
             }
         }
+
         out
     }
 
@@ -302,9 +365,8 @@ impl Editor {
     pub(crate) fn clear_selection_and_move_cache(&mut self) {
         self.selected_indices.clear();
         self.selection.rect = None;
-        self.pointer.move_selected_mask.clear();
-        self.pointer.move_selection_bounds = None;
         self.move_preview_cache = None;
+        self.floating_layer = None;
     }
 
     pub(crate) fn clear_selection_visual_state(&mut self) {
@@ -317,12 +379,12 @@ impl Editor {
     }
 
     pub(crate) fn create_layer_above_active(&mut self) {
-        if self.pointer.move_base_bitmap.is_some() {
+        if self.floating_layer.is_some() {
             self.cancel_move_session();
         }
         let id = self.next_layer_id;
         self.next_layer_id += 1;
-        let insert_at = self.active_layer_index;
+        let insert_at = self.active_layer_index + 1;
         let layer = Layer {
             id,
             name: format!("Layer {}", id),
@@ -339,7 +401,7 @@ impl Editor {
         if self.layers.len() <= 1 {
             return Err("cannot delete the last layer".to_string());
         }
-        if self.pointer.move_base_bitmap.is_some() {
+        if self.floating_layer.is_some() {
             self.cancel_move_session();
         }
         let Some(idx) = self.layer_index_by_id(layer_id) else {
@@ -359,7 +421,7 @@ impl Editor {
         let Some(idx) = self.layer_index_by_id(layer_id) else {
             return Err(format!("layer not found: {layer_id}"));
         };
-        if self.pointer.move_base_bitmap.is_some() {
+        if self.floating_layer.is_some() {
             let _ = self.finalize_move_session();
         }
         self.active_layer_index = idx;

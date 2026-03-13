@@ -109,6 +109,7 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
     handleKeyUp,
     selectTool,
     selectSelectionMode,
+    prefetchDrawComposites,
   } = useCanvasInputController({
     canvasRef,
     sessionIdRef,
@@ -149,6 +150,7 @@ export function CanvasPanel(_props: IDockviewPanelProps) {
     setRevision,
     setDragLayerId,
     setLayerNameDrafts,
+    prefetchDrawComposites,
   });
 
   const statusLine = useMemo(() => {

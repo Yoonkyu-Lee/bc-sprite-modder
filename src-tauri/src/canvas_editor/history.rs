@@ -54,7 +54,7 @@ impl Editor {
     }
 
     pub(crate) fn undo(&mut self) -> EditorEventResult {
-        if self.pointer.move_base_bitmap.is_some() {
+        if self.floating_layer.is_some() {
             self.cancel_move_session();
         }
         let patch = self.undo_stack.pop();
@@ -74,7 +74,7 @@ impl Editor {
     }
 
     pub(crate) fn redo(&mut self) -> EditorEventResult {
-        if self.pointer.move_base_bitmap.is_some() {
+        if self.floating_layer.is_some() {
             self.cancel_move_session();
         }
         let patch = self.redo_stack.pop();

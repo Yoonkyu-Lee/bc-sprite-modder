@@ -47,7 +47,7 @@ export function LayersPanel(props: Props) {
         </div>
       </div>
       <ul className="canvas-layer-list">
-        {layers.map((layer) => (
+        {[...layers].reverse().map((layer) => (
           <li
             key={layer.id}
             className={layer.id === activeLayerId ? "active" : ""}

@@ -30,6 +30,7 @@ type Params = {
   setRevision: Dispatch<SetStateAction<number>>;
   setDragLayerId: Dispatch<SetStateAction<number | null>>;
   setLayerNameDrafts: Dispatch<SetStateAction<Record<number, string>>>;
+  prefetchDrawComposites: (knownStatus?: Pick<EditorStatus, "activeLayerId" | "layers">) => void;
 };
 
 export function useCanvasActions(params: Params) {
@@ -47,6 +48,7 @@ export function useCanvasActions(params: Params) {
     setRevision,
     setDragLayerId,
     setLayerNameDrafts,
+    prefetchDrawComposites,
   } = params;
 
   const applyStatusWithSnapshot = useCallback(
@@ -95,17 +97,19 @@ export function useCanvasActions(params: Params) {
     enqueue(async () => {
       const next = await createLayerAboveActive(sessionIdRef.current);
       await applyStatusWithSnapshot(next, true);
+      prefetchDrawComposites(next);
     });
-  }, [enqueue, sessionIdRef, applyStatusWithSnapshot]);
+  }, [enqueue, sessionIdRef, applyStatusWithSnapshot, prefetchDrawComposites]);
 
   const onDeleteLayer = useCallback(
     (layerId: number) => {
       enqueue(async () => {
         const next = await deleteLayer(sessionIdRef.current, layerId);
         await applyStatusWithSnapshot(next, true);
+        prefetchDrawComposites(next);
       });
     },
-    [enqueue, sessionIdRef, applyStatusWithSnapshot]
+    [enqueue, sessionIdRef, applyStatusWithSnapshot, prefetchDrawComposites]
   );
 
   const onSelectLayer = useCallback(
@@ -113,9 +117,10 @@ export function useCanvasActions(params: Params) {
       enqueue(async () => {
         const next = await setActiveLayer(sessionIdRef.current, layerId);
         await applyStatusWithSnapshot(next, false);
+        prefetchDrawComposites(next);
       });
     },
-    [enqueue, sessionIdRef, applyStatusWithSnapshot]
+    [enqueue, sessionIdRef, applyStatusWithSnapshot, prefetchDrawComposites]
   );
 
   const onToggleLayerVisibility = useCallback(
@@ -123,9 +128,10 @@ export function useCanvasActions(params: Params) {
       enqueue(async () => {
         const next = await toggleLayerVisibility(sessionIdRef.current, layerId);
         await applyStatusWithSnapshot(next, true);
+        prefetchDrawComposites(next);
       });
     },
-    [enqueue, sessionIdRef, applyStatusWithSnapshot]
+    [enqueue, sessionIdRef, applyStatusWithSnapshot, prefetchDrawComposites]
   );
 
   const onSetLayerOpacity = useCallback(
@@ -133,9 +139,10 @@ export function useCanvasActions(params: Params) {
       enqueue(async () => {
         const next = await setLayerOpacity(sessionIdRef.current, layerId, opacity);
         await applyStatusWithSnapshot(next, true);
+        prefetchDrawComposites(next);
       });
     },
-    [enqueue, sessionIdRef, applyStatusWithSnapshot]
+    [enqueue, sessionIdRef, applyStatusWithSnapshot, prefetchDrawComposites]
   );
 
   const commitLayerName = useCallback(
@@ -166,9 +173,10 @@ export function useCanvasActions(params: Params) {
       enqueue(async () => {
         const next = await reorderLayers(sessionIdRef.current, ids);
         await applyStatusWithSnapshot(next, true);
+        prefetchDrawComposites(next);
       });
     },
-    [dragLayerId, status.layers, setDragLayerId, enqueue, sessionIdRef, applyStatusWithSnapshot]
+    [dragLayerId, status.layers, setDragLayerId, enqueue, sessionIdRef, applyStatusWithSnapshot, prefetchDrawComposites]
   );
 
   return {

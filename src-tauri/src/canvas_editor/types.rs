@@ -124,6 +124,17 @@ pub struct MovePreviewData {
     pub under_selection_rgba_base64: String,
     pub underlay_rgba_base64: String,
     pub overlay_rgba_base64: String,
+    /// Source layer opacity at the time the floating layer was created (0–255).
+    pub opacity: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LayerComposites {
+    /// Composite of all visible layers below the active layer.
+    pub underlay_rgba_base64: String,
+    /// Composite of all visible layers above the active layer.
+    pub overlay_rgba_base64: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

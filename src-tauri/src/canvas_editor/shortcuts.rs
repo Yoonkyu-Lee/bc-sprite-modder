@@ -3,7 +3,7 @@ use super::types::{EditorEventResult, EditorStatus, Point, SelectionMode, Shortc
 
 impl Editor {
     pub(crate) fn set_tool(&mut self, tool: ToolKind) -> EditorStatus {
-        if self.tool == ToolKind::Move && tool != ToolKind::Move && self.pointer.move_base_bitmap.is_some() {
+        if self.tool == ToolKind::Move && tool != ToolKind::Move && self.floating_layer.is_some() {
             let _ = self.finalize_move_session();
         }
         self.tool = tool;
@@ -12,7 +12,7 @@ impl Editor {
     }
 
     pub(crate) fn set_selection_mode(&mut self, mode: SelectionMode) -> EditorStatus {
-        if self.pointer.move_base_bitmap.is_some() {
+        if self.floating_layer.is_some() {
             let _ = self.finalize_move_session();
         }
         self.selection.mode = mode;
@@ -39,7 +39,7 @@ impl Editor {
     pub(crate) fn dispatch_shortcut(&mut self, input: ShortcutInput) -> EditorEventResult {
         let key = input.key.to_lowercase();
         if key == "enter" {
-            let patch = if self.pointer.move_base_bitmap.is_some() {
+            let patch = if self.floating_layer.is_some() {
                 self.finalize_move_session()
             } else {
                 self.clear_selection_visual_state();
@@ -59,7 +59,7 @@ impl Editor {
             return self.redo();
         }
         if key == "tab" {
-            if self.tool == ToolKind::Move && self.pointer.move_base_bitmap.is_some() {
+            if self.tool == ToolKind::Move && self.floating_layer.is_some() {
                 let _ = self.finalize_move_session();
             }
             self.tool = match self.tool {
@@ -78,7 +78,7 @@ impl Editor {
             };
         }
         if key == "l" {
-            if self.pointer.move_base_bitmap.is_some() {
+            if self.floating_layer.is_some() {
                 let _ = self.finalize_move_session();
             }
             self.selection.mode = if self.selection.mode == SelectionMode::Rect {
@@ -111,7 +111,7 @@ impl Editor {
             _ => None,
         };
         if let Some(tool) = next_tool {
-            if self.tool == ToolKind::Move && tool != ToolKind::Move && self.pointer.move_base_bitmap.is_some() {
+            if self.tool == ToolKind::Move && tool != ToolKind::Move && self.floating_layer.is_some() {
                 let _ = self.finalize_move_session();
             }
             self.tool = tool;

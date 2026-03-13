@@ -11,7 +11,7 @@ import {
   type SetStateAction,
   type WheelEvent as ReactWheelEvent,
 } from "react";
-import { applyPatch, decodeRgbaBase64, dispatchPointer, dispatchShortcut, getMovePreviewData, getSnapshot, setSelectionMode, setTool, setView } from "../backend";
+import { applyPatch, applyPatchWithComposites, decodeRgbaBase64, dispatchPointer, dispatchShortcut, getLayerComposites, getMovePreviewData, getSnapshot, setSelectionMode, setTool, setView } from "../backend";
 import { screenToPixel } from "../render";
 import { buildMovePreview, type MovePreviewState } from "../panel/movePreview";
 import { CANVAS_SIZE } from "../panel/status";
@@ -57,6 +57,11 @@ export function useCanvasInputController(params: Params) {
   const [zoomToolLatched, setZoomToolLatched] = useState(false);
   const [zoomToolHeld, setZoomToolHeld] = useState(false);
 
+  // Always-current snapshot of status; accessible inside async enqueue callbacks
+  // without stale-closure issues.
+  const latestStatusRef = useRef(status);
+  latestStatusRef.current = status;
+
   const panDragStartRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
   const zoomDragRef = useRef<{
     startClientX: number;
@@ -72,6 +77,14 @@ export function useCanvasInputController(params: Params) {
   const moveRafRef = useRef<number | null>(null);
   const pendingViewRef = useRef<{ zoom: number; pan: Point } | null>(null);
   const viewRafRef = useRef<number | null>(null);
+  // Cached underlay/overlay composites for draw/erase tools.
+  // Invalidated only when the active layer or layer visibility/opacity changes.
+  // Reused across strokes to avoid an extra IPC round-trip on every pointer-down.
+  const drawCompositesRef = useRef<{
+    underlay: Uint8ClampedArray;
+    overlay: Uint8ClampedArray;
+    cacheKey: string;
+  } | null>(null);
   // Pre-fetched move preview: populated in background right after selection commit
   // so the first drag can skip the expensive IPC round-trip.
   const prefetchedMovePreviewRef = useRef<MovePreviewState | null>(null);
@@ -181,49 +194,81 @@ export function useCanvasInputController(params: Params) {
       event.currentTarget.setPointerCapture(event.pointerId);
       // Capture at event time to avoid stale closure inside enqueue.
       const hadMovePreview = movePreview != null;
+      const currentTool = status.tool;
       enqueue(async () => {
+        // For draw/erase: ensure underlay+overlay composites are cached so the
+        // patch can be correctly placed below layers above the active layer.
+        // The cache is keyed by active-layer-id + per-layer visibility/opacity, so
+        // it is reused across strokes and only refreshed when the layer stack changes.
+        if (currentTool === "draw" || currentTool === "erase") {
+          const { activeLayerId, layers } = latestStatusRef.current;
+          const cacheKey = `${activeLayerId}|${layers.map((l) => `${l.id},${l.visible},${l.opacity}`).join("|")}`;
+          if (!drawCompositesRef.current || drawCompositesRef.current.cacheKey !== cacheKey) {
+            const data = await getLayerComposites(sessionIdRef.current);
+            drawCompositesRef.current = {
+              underlay: decodeRgbaBase64(data.underlayRgbaBase64),
+              overlay: decodeRgbaBase64(data.overlayRgbaBase64),
+              cacheKey,
+            };
+          }
+        }
         const result = await dispatchPointer(sessionIdRef.current, {
           kind: "down",
           x: point.x,
           y: point.y,
           button: event.button,
         });
-        applyPatch(bitmap, result.patch);
-        if (result.patch) {
+        if (hadMovePreview && result.patch) {
+          // Finalize: patch covers only the source layer, but bitmap is a composite.
+          // Applying the patch directly would corrupt pixels from other layers.
+          const snapshot = await getSnapshot(sessionIdRef.current);
+          setBitmap(decodeRgbaBase64(snapshot.rgbaBase64));
           setBitmapVersion((v) => v + 1);
+          setMovePreview(null);
+        } else {
+          const composites = drawCompositesRef.current;
+          if (composites && result.patch) {
+            applyPatchWithComposites(bitmap, result.patch, composites.underlay, composites.overlay);
+          } else {
+            applyPatch(bitmap, result.patch);
+          }
+          if (result.patch) {
+            setBitmapVersion((v) => v + 1);
+          }
+          if (result.status.tool === "move" && result.status.selection.moving) {
+            if (hadMovePreview) {
+              // Preview data (underlay/overlay/mask) is unchanged between drags
+              // on the same floating selection — only delta needs updating.
+              setMovePreview((prev) =>
+                prev ? { ...prev, delta: result.status.selection.moveDelta } : null
+              );
+            } else {
+              // First drag on this selection.
+              // Use pre-fetched data if it arrived in background; otherwise fetch now.
+              const prefetched = prefetchedMovePreviewRef.current;
+              prefetchedMovePreviewRef.current = null;
+              if (prefetched) {
+                setMovePreview({ ...prefetched, delta: result.status.selection.moveDelta });
+              } else {
+                const previewData = await getMovePreviewData(sessionIdRef.current);
+                const preview = buildMovePreview(
+                  CANVAS_SIZE,
+                  previewData.bounds,
+                  previewData.selectedIndices,
+                  decodeRgbaBase64(previewData.selectedBlockRgbaBase64),
+                  decodeRgbaBase64(previewData.underlayRgbaBase64),
+                  decodeRgbaBase64(previewData.overlayRgbaBase64),
+                  previewData.opacity
+                );
+                preview.delta = result.status.selection.moveDelta;
+                setMovePreview(preview);
+              }
+            }
+          } else {
+            setMovePreview(null);
+          }
         }
         setStatus(result.status);
-        if (result.status.tool === "move" && result.status.selection.moving) {
-          if (hadMovePreview) {
-            // Preview data (underlay/overlay/mask) is unchanged between drags
-            // on the same floating selection — only delta needs updating.
-            setMovePreview((prev) =>
-              prev ? { ...prev, delta: result.status.selection.moveDelta } : null
-            );
-          } else {
-            // First drag on this selection.
-            // Use pre-fetched data if it arrived in background; otherwise fetch now.
-            const prefetched = prefetchedMovePreviewRef.current;
-            prefetchedMovePreviewRef.current = null;
-            if (prefetched) {
-              setMovePreview({ ...prefetched, delta: result.status.selection.moveDelta });
-            } else {
-              const previewData = await getMovePreviewData(sessionIdRef.current);
-              const preview = buildMovePreview(
-                CANVAS_SIZE,
-                previewData.bounds,
-                previewData.selectedIndices,
-                decodeRgbaBase64(previewData.selectedBlockRgbaBase64),
-                decodeRgbaBase64(previewData.underlayRgbaBase64),
-                decodeRgbaBase64(previewData.overlayRgbaBase64)
-              );
-              preview.delta = result.status.selection.moveDelta;
-              setMovePreview(preview);
-            }
-          }
-        } else {
-          setMovePreview(null);
-        }
         setRevision((v) => v + 1);
       });
     },
@@ -234,6 +279,7 @@ export function useCanvasInputController(params: Params) {
       status.zoom,
       status.pan.x,
       status.pan.y,
+      status.tool,
       toPixel,
       bitmap,
       movePreview,
@@ -295,7 +341,12 @@ export function useCanvasInputController(params: Params) {
             y: payload.y,
             button: payload.button,
           });
-          applyPatch(bitmap, result.patch);
+          const composites = drawCompositesRef.current;
+          if (composites && result.patch) {
+            applyPatchWithComposites(bitmap, result.patch, composites.underlay, composites.overlay);
+          } else {
+            applyPatch(bitmap, result.patch);
+          }
           if (result.patch) {
             setBitmapVersion((v) => v + 1);
           }
@@ -382,7 +433,8 @@ export function useCanvasInputController(params: Params) {
                 previewData.selectedIndices,
                 decodeRgbaBase64(previewData.selectedBlockRgbaBase64),
                 decodeRgbaBase64(previewData.underlayRgbaBase64),
-                decodeRgbaBase64(previewData.overlayRgbaBase64)
+                decodeRgbaBase64(previewData.overlayRgbaBase64),
+                previewData.opacity
               );
             })
             .catch(() => {
@@ -468,7 +520,13 @@ export function useCanvasInputController(params: Params) {
           shift,
           alt,
         });
-        if (bitmap) {
+        if (hadMovePreview && result.patch) {
+          // Enter finalize: patch covers only the source layer, bitmap is composite.
+          const snapshot = await getSnapshot(sessionIdRef.current);
+          setBitmap(decodeRgbaBase64(snapshot.rgbaBase64));
+          setBitmapVersion((v) => v + 1);
+          setMovePreview(null);
+        } else if (bitmap) {
           applyPatch(bitmap, result.patch);
           if (result.patch) {
             setBitmapVersion((v) => v + 1);
@@ -532,6 +590,35 @@ export function useCanvasInputController(params: Params) {
     [enqueue, movePreview, sessionIdRef, setBitmap, setBitmapVersion, setMovePreview, setStatus, setRevision]
   );
 
+  /**
+   * Prefetches draw/erase composites (underlay + overlay) for the current active
+   * layer in the background.  Call this after any layer-structure change (select,
+   * create, delete, reorder, toggle visibility, set opacity) so that the very
+   * first draw stroke after the change doesn't have to wait for an extra IPC call.
+   */
+  const prefetchDrawComposites = useCallback((knownStatus?: Pick<EditorStatus, "activeLayerId" | "layers">) => {
+    const src = knownStatus ?? latestStatusRef.current;
+    const cacheKey = `${src.activeLayerId}|${src.layers.map((l) => `${l.id},${l.visible},${l.opacity}`).join("|")}`;
+    // Invalidate stale cache immediately so in-progress draws use fresh composites.
+    drawCompositesRef.current = null;
+    getLayerComposites(sessionIdRef.current)
+      .then((data) => {
+        // Only store if the layer structure hasn't changed while we were fetching.
+        const cur = latestStatusRef.current;
+        const curKey = `${cur.activeLayerId}|${cur.layers.map((l) => `${l.id},${l.visible},${l.opacity}`).join("|")}`;
+        if (curKey === cacheKey) {
+          drawCompositesRef.current = {
+            underlay: decodeRgbaBase64(data.underlayRgbaBase64),
+            overlay: decodeRgbaBase64(data.overlayRgbaBase64),
+            cacheKey,
+          };
+        }
+      })
+      .catch(() => {
+        drawCompositesRef.current = null;
+      });
+  }, [sessionIdRef]);
+
   useEffect(
     () => () => {
       if (moveRafRef.current != null) {
@@ -561,5 +648,6 @@ export function useCanvasInputController(params: Params) {
     handleKeyUp,
     selectTool,
     selectSelectionMode,
+    prefetchDrawComposites,
   };
 }

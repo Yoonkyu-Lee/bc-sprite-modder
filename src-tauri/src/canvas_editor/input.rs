@@ -93,17 +93,9 @@ impl Editor {
                 None
             }
             ToolKind::Move => {
-                if self.pointer.move_base_bitmap.is_none() {
+                if self.floating_layer.is_none() {
                     if self.selected_indices.is_empty() {
                         self.message = Some("MOVE: no active selection".into());
-                        return None;
-                    }
-                    let Some(bounds) = self.selected_bounds() else {
-                        self.message = Some("MOVE: no active selection".into());
-                        return None;
-                    };
-                    if !self.rebuild_move_selection_cache() {
-                        self.message = Some("MOVE: no movable pixels".into());
                         return None;
                     }
                     // Ensure cache is ready. Normally built at commit_select,
@@ -111,19 +103,24 @@ impl Editor {
                     if self.move_preview_cache.is_none() {
                         self.build_move_preview_cache();
                     }
-                    self.pointer.move_selection_bounds = Some(bounds);
-                    self.pointer.move_base_bitmap = Some(self.active_bitmap().to_vec());
-                    self.pointer.move_current_delta = Point { x: 0, y: 0 };
+                    if !self.start_floating_layer() {
+                        self.message = Some("MOVE: no movable pixels".into());
+                        return None;
+                    }
                     self.selection.move_delta = Point { x: 0, y: 0 };
                 }
 
-                let Some(bounds) = self.pointer.move_selection_bounds else {
-                    self.message = Some("MOVE: invalid selection state".into());
-                    return None;
+                let bounds = match self.floating_layer.as_ref() {
+                    Some(fl) => fl.bounds,
+                    None => {
+                        self.message = Some("MOVE: invalid selection state".into());
+                        return None;
+                    }
                 };
+                let offset = self.floating_layer.as_ref().map(|fl| fl.offset).unwrap_or_default();
                 let current_rect = Rect {
-                    x: bounds.x + self.pointer.move_current_delta.x,
-                    y: bounds.y + self.pointer.move_current_delta.y,
+                    x: bounds.x + offset.x,
+                    y: bounds.y + offset.y,
                     width: bounds.width,
                     height: bounds.height,
                 };
@@ -134,7 +131,7 @@ impl Editor {
                 }
 
                 self.pointer.move_start = Some(p);
-                self.pointer.move_drag_origin = Some(self.pointer.move_current_delta);
+                self.pointer.move_drag_origin = Some(offset);
                 self.selection.moving = true;
                 self.message = Some("MOVE".into());
                 None
@@ -177,7 +174,7 @@ impl Editor {
                 let Some(start) = self.pointer.move_start else {
                     return None;
                 };
-                if self.pointer.move_selection_bounds.is_none() {
+                if self.floating_layer.is_none() {
                     return None;
                 }
                 let Some(origin_delta) = self.pointer.move_drag_origin else {

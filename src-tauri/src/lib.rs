@@ -30,6 +30,7 @@ pub fn run() {
             commands::canvas_editor::canvas_editor_get_status,
             commands::canvas_editor::canvas_editor_get_snapshot,
             commands::canvas_editor::canvas_editor_get_move_preview_data,
+            commands::canvas_editor::canvas_editor_get_layer_composites,
             commands::canvas_editor::canvas_editor_dispatch_pointer,
             commands::canvas_editor::canvas_editor_dispatch_shortcut,
             commands::canvas_editor::canvas_editor_set_tool,

@@ -123,6 +123,13 @@ pub fn canvas_editor_get_move_preview_data(
 }
 
 #[tauri::command]
+pub fn canvas_editor_get_layer_composites(
+    args: SessionArgs,
+) -> Result<crate::canvas_editor::types::LayerComposites, String> {
+    crate::canvas_editor::get_layer_composites(&args.session_id)
+}
+
+#[tauri::command]
 pub fn canvas_editor_dispatch_pointer(
     args: DispatchPointerArgs,
 ) -> Result<crate::canvas_editor::types::EditorEventResult, String> {

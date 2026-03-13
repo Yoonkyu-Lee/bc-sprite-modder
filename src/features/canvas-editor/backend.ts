@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { EditorEventResult, EditorStatus, MovePreviewData, Point, SelectionMode, SnapshotResult, ToolKind } from "./types";
+import type { EditorEventResult, EditorStatus, LayerComposites, MovePreviewData, Point, SelectionMode, SnapshotResult, ToolKind } from "./types";
 
 export type PointerRpcInput = {
   kind: "down" | "move" | "up";
@@ -132,4 +132,57 @@ export function decodeRgbaBase64(base64: string): Uint8ClampedArray {
     out[i] = binary.charCodeAt(i);
   }
   return out;
+}
+
+export async function getLayerComposites(sessionId: string): Promise<LayerComposites> {
+  return invoke("canvas_editor_get_layer_composites", { args: { sessionId } });
+}
+
+/**
+ * Correctly applies a draw/erase patch to the composite bitmap by re-compositing
+ * the changed pixels using pre-computed underlay and overlay layers.
+ * Required when drawing on a non-topmost layer, because the patch contains raw
+ * active-layer pixels which must be composited below the overlay.
+ */
+export function applyPatchWithComposites(
+  bitmap: Uint8ClampedArray,
+  patch: EditorEventResult["patch"],
+  underlay: Uint8ClampedArray,
+  overlay: Uint8ClampedArray
+): void {
+  if (!patch) return;
+  for (let n = 0; n < patch.changedIndices.length; n += 1) {
+    const base = patch.changedIndices[n] * 4;
+    const j = n * 4;
+    // layer_new over underlay
+    const [r1, g1, b1, a1] = alphaBlend(
+      patch.after[j], patch.after[j + 1], patch.after[j + 2], patch.after[j + 3],
+      underlay[base], underlay[base + 1], underlay[base + 2], underlay[base + 3]
+    );
+    // overlay over (layer_new over underlay)
+    const [r2, g2, b2, a2] = alphaBlend(
+      overlay[base], overlay[base + 1], overlay[base + 2], overlay[base + 3],
+      r1, g1, b1, a1
+    );
+    bitmap[base] = r2;
+    bitmap[base + 1] = g2;
+    bitmap[base + 2] = b2;
+    bitmap[base + 3] = a2;
+  }
+}
+
+function alphaBlend(
+  sr: number, sg: number, sb: number, sa: number,
+  dr: number, dg: number, db: number, da: number
+): [number, number, number, number] {
+  const s = sa / 255;
+  const d = da / 255;
+  const outA = s + d * (1 - s);
+  if (outA <= 0) return [0, 0, 0, 0];
+  return [
+    Math.round(((sr / 255) * s + (dr / 255) * d * (1 - s)) / outA * 255),
+    Math.round(((sg / 255) * s + (dg / 255) * d * (1 - s)) / outA * 255),
+    Math.round(((sb / 255) * s + (db / 255) * d * (1 - s)) / outA * 255),
+    Math.round(outA * 255),
+  ];
 }

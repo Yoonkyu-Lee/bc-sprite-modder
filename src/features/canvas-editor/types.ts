@@ -72,6 +72,11 @@ export type SnapshotResult = {
   rgbaBase64: string;
 };
 
+export type LayerComposites = {
+  underlayRgbaBase64: string;
+  overlayRgbaBase64: string;
+};
+
 export type MovePreviewData = {
   bounds: Rect;
   selectedIndices: number[];
@@ -79,4 +84,6 @@ export type MovePreviewData = {
   underSelectionRgbaBase64: string;
   underlayRgbaBase64: string;
   overlayRgbaBase64: string;
+  /** Source layer opacity at float-start time (0-255). */
+  opacity: number;
 };
